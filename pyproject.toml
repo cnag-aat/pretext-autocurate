@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pretext-autocurate"
+version = "0.1.0"
+description = "Automatic first-pass curation of Hi-C contact maps from PretextMap files"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.scripts]
+pretext-autocurate = "pretext_autocurate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pretext_autocurate = ["*.bin"]

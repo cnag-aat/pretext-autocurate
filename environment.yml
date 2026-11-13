@@ -1,0 +1,13 @@
+# conda env create -f environment.yml && conda activate pretext-autocurate
+name: pretext-autocurate
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - numpy>=1.24
+  - minimap2>=2.26      # optional at run time: only for --fasta (haplotype alignment)
+  - miniprot>=0.13      # optional at run time: only for --busco-lineage
+  - pip
+  - pip:
+      - -e .

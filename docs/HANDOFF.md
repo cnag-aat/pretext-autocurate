@@ -1,0 +1,124 @@
+# Handoff: state of pretext-autocurate (written 2026-11-13)
+
+Read this first, then `PLAN.md` section 0 (the curator's priorities and conventions; the
+rest of PLAN.md is the original plan and partly out of date), then the tail of
+`docs/PROGRESS.md` (dated log with every result and number).
+
+## What exists (Python, `src/pretext_autocurate/`)
+
+| Module | Purpose |
+|---|---|
+| `pretextio.py` | `.pretext` reader, mip-level matrix, header hash, `SegmentedMap` (view of the map split at cuts; detectors run on it) |
+| `savestate.py` | PretextView savestate read/write, blank template (`template.bin`), nEdits%8 quirk |
+| `mapstate.py` | pixel simulator of PretextView edits, `plan_edits` (target permutation -> edits) |
+| `layout.py` | savestate + map -> pieces, AGP, TSV |
+| `signal.py` | decay curve, full-resolution `strip`/`block` readers, `insulation` (contact across each boundary / expectation), coverage ratio |
+| `misjoin.py` | `detect_misjoins` (cuts), `weak_junctions` (candidate breakpoints) |
+| `haplotig.py` | `detect_haplotigs` (whole small scaffolds, tiers high/medium/low), `detect_contig_haplotigs` (gap-to-gap contigs) |
+| `place.py` | `place_scaffolds`: anchor (chromosome) for each small piece; localise only at reduced-contact junctions |
+| `join.py` | `find_joins`: mutual-best end contact between pieces > 150 px, telomeric ends never joined, chains with orientation |
+| `curate.py` | `curate_single`: the whole single-haplotype pass -> decisions + savestate |
+| `allhaps.py` | allhaps pass: telomere sites (cut / invert_tip / keep), homolog pairing (Hi-C or sequence), parallel layout, HAP tags |
+| `homology.py` | minimap2 between haplotypes, PAF reading, external tool lookup |
+| `busco.py` | BUSCO lineage (path or name, opt-in download), miniprot, gene counts per haplotype and scaffold |
+| `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` |
+
+Order inside `curate_single`: misjoin cuts -> contig haplotigs (cut at gaps) -> weak
+junctions cut tentatively and kept only if pieces fit better elsewhere -> `SegmentedMap`
+-> joins/chains -> haplotig calls -> placement -> layout per chain (pieces, insertions,
+then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags/waypoints.
+
+## How to run and check
+
+    PYTHONPATH=src python3 -m pretext_autocurate.cli run --map MAP.pretext --out-dir out
+    python3 -m unittest discover -s tests            # 42 tests, about 5 minutes
+    PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
+    python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
+
+Outputs: `<map>.savestate_autocurate`, `autocurate.decisions.tsv` (every action with its
+evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
+
+## Fixtures (`seed/fixtures/`)
+
+- xgTylRafi (gastropod, single haplotype, MQ0 only, 65536 px): the development genome.
+  `.savestate_4` = curator's original curation; `.savestate_3_curator_on_autocurate` =
+  curator's 30 edits on top of an earlier tool output; `.savestate_4_curator_reviewed_tags`
+  = the same plus reviewed Haplotig/Unloc tags. **The last is the reference for scoring.**
+  Its paint ids split one chromosome (scaffold_3) into two ids; ignore that.
+- bAegFun (bird, allhaps H1_/H2_, MQ0 + MQ10, 65536 px) with curator `.savestate_6`.
+- CAE71 savestates only; the CAE71 maps are not in the repo.
+
+## Conventions agreed with the curator (also in PLAN.md section 0)
+
+- The curator's savestates are a guide, not exact truth. Flag when marginal, never hide an edit.
+- Cuts preferably at gaps; a cut inside a contig needs a stated reason.
+- Waypoints only for positions inside contigs (cuts, weak junctions, flagged joins,
+  proposed insertion loci). Standalone pieces needing a look get the `vertPaint` tag.
+- Unlocs and haplotigs go at the end of their chromosome, painted with it.
+- Telomeric/subtelomeric end contacts are common at MQ0 and are not join evidence.
+- Equal score inverted or not = probably heterozygous inversion: flag, do not edit.
+- Sex chromosomes: PAR is not a haplotig; in allhaps both X/Y (Z/W) go to HAP1.
+- allhaps with two haplotypes: pairs side by side, better one (fewer gaps, more complete,
+  telomeres) labelled HAP1; more than two: HAP1, HAP2, then Haplotig/FalseDuplicate.
+
+## allhaps spec from the curator (details in PLAN.md section 0)
+
+- Step 1: put the two haplotypes of each chromosome side by side, same orientation
+  (parallel, not an X), tag HAP1/HAP2, identify sex chromosomes if possible.
+- `--phasing none|hic|trio` controls haplotype reassignment: `trio` none at all; `hic` no
+  mixing of `H1_`/`H2_` within a superscaffold but whole superscaffolds may swap (the
+  bird); `none` free mixing with HAP1 best and balanced. The flag exists in `run` but
+  **does nothing yet**.
+- A collapsed chromosome (low heterozygosity) has no partner: report it, do not force a pair.
+- One pass preferred. Pair homologs on MQ0; cuts/joins/placement within each haplotype on
+  the high-MQ map at an adaptive resolution. A second pass (haploid maps, single mode) is
+  optional for hard cases and needs no new code.
+
+## Verified in PretextView by the curator
+
+Savestates from the blank template, break edits, paint, tags and waypoints all load.
+Not verified: the AGP format (written from memory of PretextView's style), the CAE71
+`claude_scaffold1` fixtures, and tool savestates generated after 2026-11-12.
+
+## Current numbers on xgTylRafi (against the reviewed curation)
+
+28 cuts (13 flagged), 13 joins (4 flagged), 8 insertions, 128 unlocs, 86 haplotigs
+attached. Confident haplotig calls: 83 of 84 right; 74 borderline pieces highlighted.
+Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45.
+
+## Known gaps, in rough priority
+
+1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /
+   invert_tip / keep with dual-scaffold logic, pairing, parallel layout, HAP tags, sex
+   chromosome candidates). Sequence homology is implemented (`homology.py`; `run --fasta` / `--paf`; minimap2 and
+   miniprot live in conda env `pretext-autocurate`) and is the better source for pairing.
+   `busco.py` exists but is not yet wired into `run`. Next: BUSCO completeness for the HAP1
+   choice, all-vs-all alignment (same-prefix pairs, false duplications), placing small
+   scaffolds along their homolog. Joins, unlocs, haplotigs
+   and microchromosomes under ~1.3 Mb are not done for allhaps. File mip levels saturate:
+   use `Signal.binned` for anything quantitative at coarse resolution.
+2. Chromosome 2 of xgTylRafi is two groups (a join flagged because of an interstitial
+   telomere signal and a tie). Grouping pieces of one chromosome whose ends do not touch.
+3. Small local rearrangements with weak orientation signal; nested inversions (iterate).
+4. Second piece at an already-used junction; pieces under 15 px.
+5. `Contaminant` tag (scaffold_18 is correctly left unplaced but not tagged); circular
+   bacterial pattern. p-to-q orientation of chromosomes.
+6. Haplotigs with normal coverage (4 missed outright); contig-level haplotigs (2 of 14).
+7. Thresholds are tuned on one genome. They are map-relative, but untested elsewhere.
+8. Speed: `curate_single` reads full-resolution tiles repeatedly (about 60 s per run).
+
+## allhaps: what is known and what to do first
+
+- Everything in single mode assumes one copy per locus. On an allhaps MQ0 map homologous
+  scaffolds show an off-diagonal line (like a haplotig), and placement/joins see contact
+  with both haplotypes. `detect_haplotigs` must not be run as is.
+- The bird has an MQ10 map: at MQ10 homolog lines vanish and only real contacts remain.
+  Plan: do cuts, joins and placement on MQ10 (or MQ0 restricted to the same haplotype by
+  the `H1_`/`H2_` name prefix), and use MQ0 minus MQ10 to pair homologs.
+- Curator's bird result: 82 painted units = 41 pairs incl. Z and W (both HAP1); 9 cuts,
+  all at gaps (H1_scaffold_1 and H2_scaffold_1 are each two chromosomes, ~134 + ~130 Mb);
+  6 unlocs; HAP1/HAP2 assigned per pair by quality, not by name prefix.
+- First measurements (last entry of PROGRESS.md): the single-mode cut detector fails on
+  both bird maps. MQ0 hides misjoins (contact across them is 0.24-0.67); MQ10 is too sparse
+  at full resolution (1133 false cuts) but has the right signal. Make the working
+  resolution adaptive (mip level chosen from the decay curve) before anything else.
