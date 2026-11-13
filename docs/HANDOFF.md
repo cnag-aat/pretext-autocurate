@@ -118,6 +118,8 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
   - heteromorphic sex chromosomes: HalfDeep, https://github.com/makovalab-psu/HalfDeep
   See what signal each uses and whether it can be computed from what this tool already
   has (coverage track, haplotype alignments, the FASTA).
+  If k-mer counting is needed for any of this, the curator notes that FASTK is faster
+  than meryl: prefer FASTK.
 - **FASTGA** (https://github.com/thegenemyers/FASTGA) for the pairwise alignment between
   haplotypes: benchmark against minimap2 asm5. On Troglobisium minimap2 took 94 minutes
   and 10 GB for H2 against H1, and the small-against-all alignment does not fit in this
