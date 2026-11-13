@@ -112,6 +112,12 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
   five pieces from two scaffolds and cannot be chained by two-haplotype evidence), for
   the boundary between a sex chromosome and an autosome joined in one scaffold
   (H1_scaffold_1, H2_scaffold_4), and to label X/Y or Z/W.
+- **Sex chromosome identification, references from the curator** (not read yet):
+  - homomorphic sex chromosomes: SCINKD, https://github.com/DrPintoThe2nd/SCINKD, paper
+    https://academic.oup.com/mbe/article/43/4/msag067/8664413
+  - heteromorphic sex chromosomes: HalfDeep, https://github.com/makovalab-psu/HalfDeep
+  See what signal each uses and whether it can be computed from what this tool already
+  has (coverage track, haplotype alignments, the FASTA).
 - **FASTGA** (https://github.com/thegenemyers/FASTGA) for the pairwise alignment between
   haplotypes: benchmark against minimap2 asm5. On Troglobisium minimap2 took 94 minutes
   and 10 GB for H2 against H1, and the small-against-all alignment does not fit in this
