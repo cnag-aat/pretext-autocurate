@@ -103,6 +103,8 @@ Letting the tool run the BUSCO protein search (slow; lineage directory, or a nam
 |---|---|
 | `--phasing trio\|hic\|none` | allhaps: how freely sequence may change haplotype. `trio`: never. `hic` (default): whole chromosomes may swap so the better copy is HAP1, but `H1_`/`H2_` are never mixed within one. `none`: as `hic` for now |
 | `--fasta`, `--paf` | allhaps: sequence homology between haplotypes (run minimap2, or use an alignment) |
+| `--level`, `--sweep` | allhaps: one setting from 0 (conservative) to 1 (aggressive) that moves every act-or-flag threshold; `--sweep 0,0.25,0.5,0.75,1` writes a savestate per level to choose from |
+| `--small-paf`, `--no-small-align` | allhaps: alignment of the small scaffolds against the whole assembly (run from `--fasta` by default, slow the first time); used to attach small scaffolds as unlocs and to find homologs within one haplotype file |
 | `--busco-table`, `--busco-lineage`, `--miniprot-paf` | allhaps: BUSCO genes as a guide for the HAP1 choice and for false-duplication candidates. Entirely optional; nothing acts on a single gene |
 | `--apply-inserts` | single: apply every proposed insertion, not only the clear ones |
 | `--threads`, `--work-dir` | for the external aligners |

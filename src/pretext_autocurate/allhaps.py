@@ -6,7 +6,9 @@ between the copies, so a scaffold shows a line of contact with its homolog, alon
 diagonal of their block if both are assembled in the same direction and along the
 anti-diagonal if not. Unrelated scaffolds show only background.
 
-Not done here yet: cuts, joins, unlocs, haplotigs (see docs/HANDOFF.md).
+Also here: telomere-supported cuts, small scaffolds attached as unlocs (`place_small`),
+homologs within one haplotype file (`same_prefix_pairs`). Not done yet: joins, haplotig
+tags (see docs/HANDOFF.md).
 """
 import re
 from dataclasses import dataclass
@@ -20,6 +22,19 @@ from .signal import Signal
 
 
 @dataclass
+class Level:
+    """One setting for how readily the tool acts: 0 = conservative (act only on the clearest
+    evidence, flag the rest), 0.5 = default, 1 = aggressive (act on weaker evidence too).
+    Every threshold that decides between acting and flagging is read through `at`."""
+    a: float = 0.5
+
+    def at(self, conservative, default, aggressive):
+        a = min(max(self.a, 0.0), 1.0)
+        return conservative + (default - conservative) * a / 0.5 if a <= 0.5 else \
+            default + (aggressive - default) * (a - 0.5) / 0.5
+
+
+@dataclass
 class Pair:
     a: int                # scaffold index, placed first (HAP1)
     b: int                # its homolog (HAP2)
@@ -28,6 +43,15 @@ class Pair:
     same_strand: bool
     kind: str             # pair | unequal (possible sex chromosomes) | extra
     note: str
+
+
+def _signal(m):
+    """One Signal per map, kept on the map object: its decay curve, insulation profiles,
+    binned matrix and decoded tiles are reused between steps and between sweep levels."""
+    m = getattr(m, "pt", m)
+    if "_signal" not in m.__dict__:
+        m.__dict__["_signal"] = Signal(m)
+    return m.__dict__["_signal"]
 
 
 def _level(pt, max_side=8192):
@@ -56,7 +80,10 @@ def pair_homologs(pt, hap_regex=r"^(H\d+)_", min_bins=4, score_min=None, margin=
     aligns to the other, ranking is by aligned bases, strand by the majority of aligned
     bases. Without blocks it is estimated from the MQ0 Hi-C signal."""
     lv = _level(pt)
-    M = pt.matrix(lv).astype(np.float32)
+    base = getattr(pt, "pt", pt)
+    if ("_mip", lv) not in base.__dict__:
+        base.__dict__[("_mip", lv)] = base.matrix(lv).astype(np.float32)
+    M = base.__dict__[("_mip", lv)]
     f = pt.npix // M.shape[0]
     hap = [(re.match(hap_regex, n).group(1) if re.match(hap_regex, n) else "") for n in pt.names]
     if len({h for h in hap if h}) < 2:
@@ -206,9 +233,14 @@ def pair_homologs(pt, hap_regex=r"^(H\d+)_", min_bins=4, score_min=None, margin=
 
 
 def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, contact_max=0.5, near_px=3, end_px=15,
-                   tol_frac=0.01, broad_min=0.6, invert_min=1.3):
-    """Gaps inside a scaffold that carry a telomere signal with reduced contact across, plus
-    the homologous gap in the paired scaffold (dual scaffolding). Each is decided as:
+                   tol_frac=0.01, broad_min=0.6, invert_min=1.3, gap_max=0.6, sharp_max=0.1, merge_px=5, tip_max=0.5):
+    """Candidate break sites, plus the homologous gap in the paired scaffold (dual scaffolding):
+      - a gap inside a scaffold with contact across below `gap_max` of expectation (a telomere
+        signal there is supporting evidence, not a requirement: telomere tracks are not
+        reliable in every species);
+      - a point with no gap where contact drops to background on both scales (`sharp_max`),
+        with normal contact on each side: cut outright.
+    Each gap site is decided as:
 
       cut         the two sides have different homologs in the other haplotype, or share
                   no chromosome-level contact: two chromosomes joined end to end
@@ -220,18 +252,23 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
     (pixel range of the end piece).
     """
     tel, gap = pt.graphs.get("telomere"), pt.graphs.get("gap")
-    if tel is None or gap is None:
+    if gap is None:
         return []
+    if tel is None:
+        tel = np.zeros(pt.npix)
     thr = max(50.0, 5 * float(np.percentile(tel, 99)))
-    sg0, sgh = Signal(pt), Signal(hi if hi is not None else pt)
+    sg0 = _signal(pt)
+    sgh = _signal(hi) if hi is not None else sg0
     near = sgh.insulation(10, 0)
     which = "high-MQ map" if hi is not None else "MQ0 map"
 
-    def contact(q):
+    near0 = sg0.insulation(10, 0) if hi is not None else near
+
+    def contact(q, near=near):
         w = near[max(0, q - 2):q + 3]
         return float(np.nanmin(w)) if np.isfinite(w).any() else float("nan")
 
-    sites, carried = {}, {}
+    sites, carried, site_c = {}, {}, {}
     for q in np.nonzero(gap > 0)[0]:
         q = int(q)
         s = int(pt.orig_scaffold[q])
@@ -241,7 +278,32 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         t = float(tel[max(a, q - near_px):q + near_px + 1].max())
         c = contact(q)
         if t >= thr and c < contact_max:
-            sites[q] = (s, f"telomere signal ({t:.0f}) at a gap inside the scaffold, contact across {c:.2f} on the {which}")
+            pass
+        elif not (c < gap_max and (near0 is near or contact(q, near0) < gap_max)):
+            continue                           # without a telomere: reduced on the MQ0 map as well as the high-MQ one
+        close = [k for k in sites if abs(k - q) <= merge_px]
+        if close:                              # several gap pixels at one place: keep the weakest point
+            if c >= site_c[close[0]]:
+                continue
+            del sites[close[0]]
+        site_c[q] = c
+        sites[q] = (s, (f"telomere signal ({t:.0f}) at a gap inside the scaffold, " if t >= thr else "gap inside the scaffold, ")
+                    + f"contact across {c:.2f} of expectation on the {which}")
+    # sharp breaks away from any gap: contact at background on both scales (dense maps only:
+    # on a sparse high-MQ map a 10 px window is too noisy for this)
+    sharp = {}
+    from .misjoin import detect_misjoins, Params as MisjoinParams
+    dense = sg0.decay[min(20, len(sg0.decay) - 1)] >= 0.25 * sg0.decay[0]
+    if sharp_max > 0 and dense:
+        for cdt in detect_misjoins(pt, MisjoinParams(cut_max=sharp_max), sg0):
+            q = int(cdt.after_px)
+            s = int(pt.orig_scaffold[q])
+            a, n = int(pt.scaffold_start[s]), int(pt.scaffold_npix[s])
+            if (not cdt.apply or cdt.at_gap or q - a < end_px or a + n - 1 - q < end_px
+                    or any(abs(k - q) <= 2 * merge_px for k in sites) or not cdt.far < sharp_max):
+                continue
+            sharp[q] = (s, f"no gap here, but contact across drops to background on the MQ0 map ({cdt.near:.2f} within "
+                           f"10 px, {cdt.far:.2f} at 10-40 px) with normal contact on each side")
     partner = {}
     for p in pairs:
         if p.kind == "pair":
@@ -254,7 +316,7 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         b, m = int(pt.scaffold_start[y]), int(pt.scaffold_npix[y])
         cand = b + np.nonzero(gap[b:b + m] > 0)[0]
         cand = [int(c) for c in cand if c - b >= end_px and b + m - 1 - c >= end_px
-                and contact(int(c)) < contact_max and not any(abs(int(c) - k) <= 5 for k in sites)]
+                and contact(int(c)) < max(contact_max, gap_max) and (int(c) in sites or not any(abs(int(c) - k) <= 5 for k in sites))]
         hit = None
         if blocks is not None:
             # Dual scaffolding with alignments: a gap in the partner whose two flanks are
@@ -290,14 +352,16 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
             tol = max(30, int(tol_frac * m))
             near_c = [c for c in cand if abs(c - target) <= tol]
             hit = min(near_c, key=lambda c: abs(c - target)) if near_c else None
-        if hit is not None:
+        if hit is not None and hit in sites:
+            carried[hit] = q                   # already a site on its own evidence; the homology adds to it
+        elif hit is not None:
             carried[hit] = q
             sites[hit] = (y, f"gap matching the telomere-bearing gap in {pt.names[s]} (other haplotype): the two sides "
                              f"are homologous to the two sides of that gap; contact across {contact(hit):.2f} on the {which}")
-    if not sites:
+    if not sites and not sharp:
         return []
     # 1. homologs of the two sides, after cutting every site tentatively
-    vt = SegmentedMap(pt, list(sites))
+    vt = SegmentedMap(pt, list(sites) + list(sharp))
     pt_pairs, _ = pair_homologs(vt, hap_regex, blocks=blocks)
     mate = {}
     for p in pt_pairs:
@@ -332,7 +396,11 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         if ml is not None and mr is not None and parent(ml) != parent(mr):
             action = "cut"
             why += f"; the two sides have different homologs ({vt.names[ml]} and {vt.names[mr]}): two chromosomes joined"
-        elif not broad >= broad_min:
+        elif not np.isfinite(broad) and site_c.get(q, contact(q)) < tip_max:
+            action = "cut"
+            why += ("; one side is too short to measure chromosome-level contact with the other, and contact across "
+                    "the gap is clearly reduced: cut")
+        elif broad < broad_min:
             action = "cut"
             why += (f"; chromosome-level contact between the sides is {broad:.2f} of what one chromosome shows: "
                     "two chromosomes joined end to end")
@@ -362,21 +430,440 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         if by_q[q]["action"] == "cut" and by_q[c]["action"] != "cut":
             by_q[c]["action"] = "cut"
             by_q[c]["reason"] += f"; cut because the homologous site in {pt.names[by_q[q]['s']]} is a misjoin"
+    for q, (s, why) in sharp.items():
+        out.append(dict(q=q, s=s, action="cut", reason=why, tip=(q, q)))
+    out.sort(key=lambda x: x["q"])
     return out
 
 
-def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None):
-    """allhaps curation so far: telomere-supported cuts, homolog pairing, parallel layout,
-    HAP tags. `hi` is the high-MQ map of the same assembly, if there is one.
+def _union(iv):
+    tot, end = 0, -1
+    for a, b in sorted(iv):
+        if b > end:
+            tot += b - max(a, end)
+            end = b
+    return tot
+
+
+def _small_alignments(pt, small_blocks):
+    """{query unit: {target unit: [intervals on the query, intervals with mapq >= 30, bases on
+    the same strand, bases]}} from the alignment of small scaffolds against everything.
+    A unit's alignments to itself (internal repeats) are left out."""
+    raw = getattr(pt, "pt", pt)
+    idx = {n: i for i, n in enumerate(raw.names)}
+    bpp = raw.bp_per_pix
+
+    def unit(name, bp):
+        i = idx.get(name)
+        if i is None or raw.scaffold_npix[i] == 0:
+            return None
+        return int(pt.orig_scaffold[int(raw.scaffold_start[i]) + min(int(bp / bpp), int(raw.scaffold_npix[i]) - 1)])
+
+    out = {}
+    for bk in small_blocks:
+        x, y = unit(bk.q, (bk.qs + bk.qe) / 2), unit(bk.t, (bk.ts + bk.te) / 2)
+        if x is None or y is None or x == y:
+            continue
+        e = out.setdefault(x, {}).setdefault(y, [[], [], 0, 0])
+        e[0].append((bk.qs, bk.qe))
+        if bk.mapq >= 30:
+            e[1].append((bk.qs, bk.qe))
+        e[2] += (bk.qe - bk.qs) if bk.same_strand else 0
+        e[3] += bk.qe - bk.qs
+    return out
+
+
+def same_prefix_pairs(pt, info, small_blocks, min_bp=500000, frac_min=0.5):
+    """Homologs that ended up in the same haplotype file (both `H1_`, say): two unpaired
+    scaffolds of one prefix that are each other's best match, with at least half of the
+    shorter one aligned uniquely to the other. The H2-against-H1 alignment cannot show these."""
+    aln = _small_alignments(pt, small_blocks)
+    bpp, hap, npx = pt.bp_per_pix, info["hap"], pt.scaffold_npix
+    free = set(info["unpaired"]) | set(info.get("repetitive", {}))
+    free = {u for u in free if npx[u] * bpp >= min_bp}
+
+    def best(u):
+        t = {v: _union(e[0]) for v, e in aln.get(u, {}).items()}
+        return max(t, key=t.get) if t else None
+
+    out = []
+    for x in sorted(free, key=lambda u: -npx[u]):
+        y = best(x)
+        if y is None or y not in free or hap[y] != hap[x] or best(y) != x or (npx[y], y) > (npx[x], x):
+            continue
+        e = aln[y][x]
+        uniq = _union(e[1]) / (npx[y] * bpp)
+        if uniq < frac_min:
+            continue
+        out.append(Pair(x, y, 100.0 * uniq, 0.0, e[2] >= 0.5 * e[3], "pair",
+                        f"both copies carry the prefix {hap[x]}_: homologs that ended up in the same haplotype file"))
+    return out
+
+
+def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_margin=2.0, hic_agree=1.5,
+                hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5,
+                phasing="hic", copy_margin=1.5, cis_frac=0.2):
+    """Which chromosome each remaining small scaffold belongs to.
+
+    Two independent lines of evidence: sequence (share of the scaffold that aligns to a
+    chromosome's copies, from the small-against-all alignment) and Hi-C (mean contact with
+    each chromosome on the MQ0 map, best copy; confirmed on the high-MQ map when it is the
+    only evidence). Most small scaffolds of an allhaps assembly are repeats that contact a
+    repeat-rich chromosome at MQ0 and nothing at high MQ; those are left alone.
+
+      unloc      both lines agree, or Hi-C alone is strong on both maps: attach
+      candidate  sequence says one chromosome but Hi-C does not confirm, or long-read
+                 coverage is repeat-like (collapsed repeats match several places): report,
+                 highlight, do not move
+
+    Which copy (curator, 2026-11-13: a small piece may go to the other prefix's copy, also
+    under hic phasing; never under trio): sequence found in one copy only -> the copy that
+    lacks it; found in both -> the copy it contacts on the high-MQ map, else the shorter one.
+
+    Returns a list of dicts (u, copy, action, third_copy, evidence)."""
+    npx, start, hap = pt.scaffold_npix, pt.scaffold_start, info["hap"]
+    main = [p for p in pairs if p.kind != "extra"]
+    chrom, copies = {}, {}
+    for k, p in enumerate(main):
+        chrom[p.a] = chrom[p.b] = k
+        copies[k] = (p.a, p.b)
+    taken = set(chrom) | {p.b for p in pairs if p.kind == "extra"}
+    small = [u for u in range(pt.n_scaffolds) if npx[u] > 0 and u not in taken and hap[u]]
+    if not small or not main:
+        return []
+    aln = _small_alignments(pt, small_blocks) if small_blocks is not None else {}
+    bpp = pt.bp_per_pix
+    seq = {}
+    for u in small:
+        per, L = {}, npx[u] * bpp
+        for v, e in aln.get(u, {}).items():
+            if v in chrom:
+                per.setdefault(chrom[v], {})[v] = e[0]
+        f = sorted(((_union([i for iv in d.values() for i in iv]) / L, k) for k, d in per.items()), reverse=True)
+        if f:
+            k = f[0][1]
+            seq[u] = (f[0][0], f[1][0] if len(f) > 1 else 0.0, k,
+                      {v: _union(iv) / L for v, iv in per[k].items()})
+    need = [u for u in small if npx[u] >= hic_alone_px or (u in seq and seq[u][0] >= seq_min)]
+    name = lambda k: "/".join(pt.names[v] for v in copies[k])
+    cs = np.concatenate(([0.0], np.zeros(pt.npix)))
+    units = sorted(chrom)
+
+    def contact(sg, u):
+        a, L = int(start[u]), int(npx[u])
+        prof = sg.strip(a, a + L - 1).astype(np.float32).mean(0)
+        cs[1:] = np.cumsum(prof, dtype=np.float64)
+        per = {v: (cs[start[v] + npx[v]] - cs[start[v]]) / npx[v] for v in units}
+        sc = sorted(((max(per[v] for v in copies[k]), k) for k in copies), reverse=True)
+        return sc, per
+
+    sg0 = _signal(pt)
+    sgh = _signal(hi) if hi is not None else None
+    covg, covn = pt.graphs.get("coverage"), None
+    if covg is not None:
+        largest = npx[pt.orig_scaffold] >= 0.2 * npx.max()
+        covn = covg / max(float(np.median(covg[largest])), 1e-9)
+    out = []
+    for u in sorted(need, key=lambda u: start[u]):
+        sc0, per0 = contact(sg0, u)
+        r0 = sc0[0][0] / max(sc0[1][0], 1e-6)
+        s = seq.get(u)
+        seq_ok = s is not None and s[0] >= seq_min and s[0] >= seq_margin * s[1]
+        k, action, why = None, None, ""
+        if seq_ok:
+            k = s[2]
+            why = f"{100 * min(s[0], 1):.0f}% of it aligns to the chromosome {name(k)} (next chromosome {100 * s[1]:.0f}%)"
+            if sc0[0][1] == k and r0 >= hic_agree:
+                action = "unloc"
+                why += f"; Hi-C agrees: MQ0 contact with it is {r0:.1f}x the next chromosome"
+            else:
+                action = "candidate"
+                why += (f"; Hi-C does not confirm it (strongest MQ0 contact is with {name(sc0[0][1])}, "
+                        f"{r0:.1f}x the next): not moved")
+        elif npx[u] >= hic_alone_px and r0 >= hic_alone and not (s is not None and s[0] >= seq_min and s[2] != sc0[0][1]):
+            k = sc0[0][1]
+            ok, extra = True, ""
+            if sgh is not None:
+                sch, perh = contact(sgh, u)
+                rh = sch[0][0] / max(sch[1][0], 1e-6)
+                ok = sch[0][1] == k and rh >= hi_margin
+                extra = f", and {rh:.1f}x on the high-MQ map"
+            if ok:
+                action = "unloc"
+                why = f"Hi-C alone: MQ0 contact with the chromosome {name(k)} is {r0:.1f}x the next chromosome{extra}"
+        if action is None:
+            continue
+        if action == "unloc" and covn is not None:
+            cv = float(np.median(covn[start[u]:start[u] + npx[u]]))
+            if cv >= repeat_cov:
+                action = "candidate"
+                why += f"; but its coverage is {cv:.1f}x a normal copy (collapsed repeats): not moved"
+        a_, b_ = copies[k]
+        own = [v for v in (a_, b_) if hap[v] == hap[u]]
+        fr = s[3] if seq_ok else {}
+        fa, fb = fr.get(a_, 0.0), fr.get(b_, 0.0)
+        how = ""
+        if main[k].kind == "unequal" or len(own) != 1:
+            # sex chromosomes, same-prefix pair: the copy with the evidence
+            copy = max((a_, b_), key=lambda v: (fr.get(v, 0.0), per0[v]))
+        elif phasing == "trio" or not seq_ok:
+            copy = own[0]
+        elif max(fa, fb) >= seq_min and min(fa, fb) < 0.5 * seq_min:
+            # in one copy only: it belongs to the copy that lacks it
+            copy = a_ if fa < fb else b_
+            how = f"only {pt.names[b_ if copy == a_ else a_]} has this sequence, so it goes to {pt.names[copy]}"
+        else:
+            # in both copies already. The high-MQ map separates haplotypes; failing that, the
+            # shorter copy is the one more likely to lack sequence
+            copy = own[0]
+            if sgh is not None:
+                _, perh = contact(sgh, u)
+                hi_, lo_ = max(perh[a_], perh[b_]), min(perh[a_], perh[b_])
+                if hi_ >= copy_margin * max(lo_, 1e-6) and hi_ >= 0.5:
+                    copy = a_ if perh[a_] > perh[b_] else b_
+                    how = f"high-MQ contact is {hi_ / max(lo_, 1e-6):.1f}x stronger with {pt.names[copy]}"
+            if not how and npx[a_] != npx[b_]:
+                copy = a_ if npx[a_] < npx[b_] else b_
+                how = f"no haplotype-specific contact; put with the shorter copy, {pt.names[copy]}"
+        if how:
+            why += "; " + how
+        if hap[copy] != hap[u]:
+            why += f" (prefix {hap[u]}_ in a {hap[copy]}_ superscaffold)"
+        if action == "unloc" and len(own) == 1 and main[k].kind != "unequal":
+            # A piece of this chromosome also touches the copy of its own haplotype (cis contact).
+            # Contact with the other haplotype's copy only is the homolog line alone: the piece is
+            # then a chromosome of its own whose homolog is joined to this one in the other
+            # haplotype, and the place to look is a misjoin there.
+            other = b_ if own[0] == a_ else a_
+            if per0[own[0]] < cis_frac * per0[other]:
+                action = "candidate"
+                why += (f"; but it hardly touches {pt.names[own[0]]}, the copy of its own haplotype "
+                        f"({per0[own[0]] / max(per0[other], 1e-6):.2f} of its contact with {pt.names[other]}): probably "
+                        f"the homolog of part of {pt.names[other]}, which would then be a misjoin; not moved")
+        third = bool(seq_ok and all(s[3].get(v, 0.0) >= seq_min for v in (a_, b_)))
+        if third:
+            why += ("; the sequence is present in both copies of the chromosome already: a third copy "
+                    "(haplotig or false duplication), highlighted")
+        out.append(dict(u=u, copy=copy, action=action, third_copy=third, evidence=why,
+                        score=round(100 * min(s[0], 1), 1) if seq_ok else round(r0, 1), ratio=round(r0, 1)))
+    return out
+
+
+def _adjacency(sg, g, P, rP, Q, rQ, window=100):
+    """Contact between the right end of piece P and the left end of piece Q as laid out
+    (pieces are inclusive pixel ranges; r = reversed), relative to what adjacent sequence
+    shows at the same distances. The outermost pixels are skipped."""
+    def win(piece, tail):
+        L = piece[1] - piece[0] + 1
+        K = min(10, L // 10)
+        W = max(1, min(window, L // 2 - K))
+        return (piece[1] - K - W + 1, piece[1] - K, K, True) if tail else (piece[0] + K, piece[0] + K + W - 1, K, False)
+    a0, a1, k1, t1 = win(P, not rP)
+    b0, b1, k2, t2 = win(Q, rQ)
+    B = sg.block(a0, a1, b0, b1).astype(np.float64)
+    i, j = np.arange(a1 - a0 + 1), np.arange(b1 - b0 + 1)
+    i, j = (i[::-1] if t1 else i), (j[::-1] if t2 else j)
+    expect = g[np.minimum(i[:, None] + j[None, :] + 1 + k1 + k2, len(g) - 1)]
+    return float(B.sum() / max(expect.sum(), 1e-9))
+
+
+def _homolog_dir(sg, a, b, cols, max_rows=120, k=6):
+    """Direction of the homology line of rows a..b within the column ranges `cols` (the other
+    copy of the chromosome): +1 if the homolog runs the same way, -1 if reversed, 0 if no
+    line stands out. Sums the map along diagonals and anti-diagonals and takes the sharpest
+    one (a line is a few pixels wide; cis contact is broad and cancels in the contrast)."""
+    L = b - a + 1
+    if L > max_rows:
+        a += (L - max_rows) // 2
+        b = a + max_rows - 1
+    W = b - a + 1
+    St = sg.strip(a, b).astype(np.float32)
+    best = {1: 0.0, -1: 0.0}
+    noise = False
+    for lo, hi in cols:
+        M = hi - lo + 1 - W + 1
+        if M <= 4 * k:
+            continue
+        F, R = np.zeros(M, np.float32), np.zeros(M, np.float32)
+        for i in range(W):
+            F += St[i, lo + i:lo + i + M]
+            R += St[i, lo + W - 1 - i:lo + W - 1 - i + M]
+        for d, D in ((1, F / W), (-1, R / W)):
+            c = D[k:-k] - 0.5 * (D[:-2 * k] + D[2 * k:])
+            best[d] = max(best[d], float(c.max()))
+            noise = True
+    if not noise:
+        return 0
+    d = 1 if best[1] >= best[-1] else -1
+    if best[d] < 2.0 * best[-d]:                # the other direction shows what "no line" gives here
+        return 0
+    return d
+
+
+def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
+    """Order and orientation of the pieces of one chromosome copy that give the most contact
+    between neighbouring ends (exact search over all orders and orientations).
+    `pieces`: inclusive pixel ranges; `init`: the arrangement to compare with, a list of
+    (index, reversed). Returns (best arrangement, its score, score of init, link scores,
+    pieces whose orientation was too close to call and was left as it was)."""
+    n = len(pieces)
+    g = sg.decay_long(230)
+    adj = {}
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                for ri in (False, True):
+                    for rj in (False, True):
+                        adj[(i, ri, j, rj)] = _adjacency(sg, g, pieces[i], ri, pieces[j], rj)
+    total = lambda arr: sum(adj[(a, ra, b, rb)] for (a, ra), (b, rb) in zip(arr, arr[1:]))
+    if n > max_n or n < 2:
+        return list(init), total(init), total(init), adj, []
+    best = {}                                   # (mask, last, reversed) -> (score, previous state)
+    for i in range(n):
+        for r in (False, True):
+            best[(1 << i, i, r)] = (0.0, None)
+    for mask in range(1, 1 << n):
+        for i in range(n):
+            if not mask >> i & 1:
+                continue
+            for r in (False, True):
+                cur = best.get((mask, i, r))
+                if cur is None:
+                    continue
+                for j in range(n):
+                    if mask >> j & 1:
+                        continue
+                    for rj in (False, True):
+                        key = (mask | 1 << j, j, rj)
+                        v = cur[0] + adj[(i, r, j, rj)]
+                        if key not in best or v > best[key][0]:
+                            best[key] = (v, (mask, i, r))
+    full = (1 << n) - 1
+    end = max(((best[(full, i, r)][0], i, r) for i in range(n) for r in (False, True)))
+    arr, state = [], (full, end[1], end[2])
+    while state is not None:
+        arr.append((state[1], state[2]))
+        state = best[state][1]
+    arr.reverse()
+    big = max(range(n), key=lambda i: pieces[i][1] - pieces[i][0])
+    if dict(arr)[big] != dict(init)[big]:       # keep the largest piece the way it was
+        arr = [(i, not r) for i, r in reversed(arr)]
+    # A piece whose two orientations score about the same: end contact cannot orient it.
+    # Then the other haplotype is the guide (`guide(i)`: +1 / -1 / 0, direction of piece i's
+    # homology line in the other copy): the piece is turned so that its homolog runs the same
+    # way as that of the nearest piece whose orientation is clear. Without a guide it keeps
+    # the orientation it had.
+    r_of = dict(arr)
+    flip_cost = {}
+    for k_, (i, r) in enumerate(arr):
+        alt = arr[:k_] + [(i, not r)] + arr[k_ + 1:]
+        flip_cost[i] = total(arr) - total(alt)
+    unclear = [i for i, _ in arr if flip_cost[i] < orient_gain]
+    if unclear and len(unclear) == n:           # nothing is clear: the largest piece is the reference
+        unclear.remove(big)
+    order_ = [i for i, _ in arr]
+    for i in list(unclear):
+        ref = min((j for j in order_ if j not in unclear), key=lambda j: abs(order_.index(j) - order_.index(i)), default=None)
+        di, dj = (guide(i), guide(ref)) if guide is not None and ref is not None else (0, 0)
+        if di and dj:
+            r_of[i] = r_of[ref] ^ (di != dj)
+            unclear.remove(i)                   # settled by the homolog
+        else:
+            r_of[i] = dict(init)[i]
+    arr = [(i, r_of[i]) for i in order_]
+    if dict(arr)[big] != dict(init)[big]:
+        arr = [(i, not r) for i, r in reversed(arr)]
+    return arr, total(arr), total(init), adj, unclear
+
+
+def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
+                   small_blocks=None, do_place=True, level=0.5, do_arrange=True):
+    """allhaps curation so far: cuts at gaps with reduced contact and at sharp breaks, homolog
+    pairing, parallel layout, HAP tags, unlocs. `hi` is the high-MQ map of the same assembly,
+    if there is one. `level` (0 conservative .. 1 aggressive, see `Level`) moves every
+    act-or-flag threshold together.
     Returns (rows for the decisions table, savestate, info)."""
     raw = pt
-    first_pairs, _ = pair_homologs(raw, hap_regex, blocks=blocks)
-    sites = telomere_sites(raw, first_pairs, hi, hap_regex, blocks) if do_cuts else []
+    lv = Level(level)
+    margin = lv.at(1.5, 1.3, 1.15)
+    first_pairs, _ = pair_homologs(raw, hap_regex, blocks=blocks, margin=margin)
+    sites = telomere_sites(raw, first_pairs, hi, hap_regex, blocks, gap_max=lv.at(0.45, 0.6, 0.75),
+                           sharp_max=lv.at(0.05, 0.1, 0.2), tip_max=lv.at(0.35, 0.5, 0.65)) if do_cuts else []
     cuts = [(x["q"], x["s"], x["reason"]) for x in sites if x["action"] == "cut"]
     flips = [x["tip"] for x in sites if x["action"] == "invert_tip"]
     pt = SegmentedMap(raw, [q for q, _, _ in cuts])
-    pairs, info = pair_homologs(pt, hap_regex, blocks=blocks)
+    pairs, info = pair_homologs(pt, hap_regex, blocks=blocks, margin=margin)
+    if small_blocks is not None:
+        pairs += same_prefix_pairs(pt, info, small_blocks)
+    small_calls = place_small(pt, pairs, info, small_blocks, hi, phasing=phasing, seq_min=lv.at(0.6, 0.5, 0.4),
+                              hic_agree=lv.at(2.0, 1.5, 1.2), hic_alone=lv.at(3.5, 2.5, 2.0)) if do_place else []
+    attach = {}
+    for c in small_calls:
+        if c["action"] == "unloc":
+            attach.setdefault(c["copy"], []).append(c)
     hap = info["hap"]
+    # Order and orientation within each chromosome copy: its pieces between the sites that
+    # were kept or tip-inverted, plus attached pieces large enough to carry an end signal.
+    npx_, start_ = pt.scaffold_npix, pt.scaffold_start
+    sg_arr = _signal(hi) if hi is not None else _signal(raw)
+    soft = sorted(x["q"] for x in sites if x["action"] != "cut")
+    tips = {tuple(x["tip"]) for x in sites if x["action"] == "invert_tip"}
+    chain_px, gain_min = lv.at(60, 40, 20), lv.at(0.3, 0.15, 0.05)
+    mate_of = {}
+    for p in pairs:
+        if p.kind != "extra":
+            mate_of[p.a], mate_of[p.b] = p.b, p.a
+    extra_of = {}
+    for p in pairs:
+        if p.kind == "extra" and p.a in mate_of:
+            extra_of.setdefault(mate_of[p.a], []).append(p.b)
+    arranged, joined, arr_rows = {}, {}, []
+    span = lambda a, b: (f"{raw.names[raw.orig_scaffold[a]]} {raw.rel_coord[a] * raw.bp_per_pix / 1e6:.1f}-"
+                         f"{(raw.rel_coord[b] + 1) * raw.bp_per_pix / 1e6:.1f} Mb")
+    for u in (sorted(mate_of, key=lambda u: start_[u]) if do_arrange else []):
+        a, b = int(start_[u]), int(start_[u] + npx_[u] - 1)
+        pieces, lo = [], a
+        for q in [q for q in soft if a <= q < b]:
+            pieces.append((lo, q))
+            lo = q + 1
+        pieces.append((lo, b))
+        own = len(pieces)
+        others = [c["u"] for c in attach.get(u, []) if npx_[c["u"]] >= chain_px] + \
+                 [v for v in extra_of.get(u, []) if npx_[v] >= chain_px]
+        pieces += [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in others]
+        if len(pieces) < 2 or len(pieces) > 9 or min(q - p_ for p_, q in pieces) < 4:
+            continue
+        init = [(i, pieces[i] in tips) for i in range(len(pieces))]
+        m_ = mate_of[u]
+        cols = [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in
+                [m_] + [c["u"] for c in attach.get(m_, [])] + extra_of.get(m_, [])]
+        memo = {}
+
+        def guide(i, pieces=pieces, cols=cols, memo=memo):
+            if i not in memo:
+                memo[i] = _homolog_dir(_signal(raw), pieces[i][0], pieces[i][1], cols)
+            return memo[i]
+        arr, best, was, adj, unclear = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
+                                                      guide=guide)
+        if arr == init or best - was < gain_min:
+            continue
+        arranged[u] = [(pieces[i][0], pieces[i][1], r) for i, r in arr]
+        for v in others:
+            joined[v] = u
+        links = [adj[(x, rx, y, ry)] for (x, rx), (y, ry) in zip(arr, arr[1:])]
+        arr_rows.append(dict(
+            action="rearrange", scaffold=pt.names[u], length_mb=round(npx_[u] * pt.bp_per_pix / 1e6, 2), partner="",
+            strand="", tag="", score=round(best, 2), next_best=round(was, 2),
+            evidence="new order: " + ", ".join(span(pieces[i][0], pieces[i][1]) + (" reversed" if r else "") for i, r in arr)
+                     + "; contact between neighbouring ends " + "/".join(f"{x:.2f}" for x in links)
+                     + f" (sum {best:.2f}) against {was:.2f} as assembled"
+                     + ("; orientation too close to call, left as it was, for: "
+                        + ", ".join(span(*pieces[i]) for i in unclear) if unclear else "")))
+    for c in small_calls:
+        if c["u"] in joined:
+            c["action"] = "join"
+    for u in attach:
+        attach[u] = [c for c in attach[u] if c["u"] not in joined]
     unit_h = "% of the shorter aligned" if blocks is not None else ""
     haps = sorted({h for h in hap if h})
     cov = pt.graphs.get("coverage")
@@ -390,6 +877,15 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         if main else np.array([], dtype=int)
     norm = float(np.median(cov[paired])) if cov is not None and len(paired) else 0.0
     rows, order, tag_of, paint_of = [], [], {}, {}
+    unloc_units, sex_like, in_chain = set(), set(), set()
+    look_units = {c["u"] for c in small_calls if c["action"] == "candidate" or c["third_copy"]}
+    for c in small_calls:
+        rows.append(dict(action={"unloc": "unloc", "join": "join"}.get(c["action"], "unloc_candidate"), scaffold=pt.names[c["u"]],
+                         length_mb=round(npx[c["u"]] * pt.bp_per_pix / 1e6, 2), partner=pt.names[c["copy"]], strand="",
+                         tag="Unloc" if c["action"] == "unloc" else "", score=c["score"], next_best="",
+                         evidence=c["evidence"] + ("; large enough to place by end contact: joined into the chromosome "
+                                                   "(see the rearrange row)" if c["action"] == "join" else "")))
+    rows += arr_rows
     mb = lambda s: npx[s] * pt.bp_per_pix / 1e6
     # BUSCO genes per unit (complete copies, and how many of them are duplicated in the unit)
     genes, dup_of = {}, {}
@@ -438,6 +934,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
 
     def pixels(s, rev=False):
         """Pixels of a unit in layout order, with any inverted end piece turned in place."""
+        if s in arranged:
+            px = np.concatenate([np.arange(a, b + 1)[::-1] if r else np.arange(a, b + 1) for a, b, r in arranged[s]])
+            return px[::-1] if rev else px
         px = np.arange(start[s], start[s] + npx[s])
         for a, b in flips:
             if start[s] <= a and b < start[s] + npx[s]:
@@ -450,6 +949,10 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         hemi = norm and all(float(np.median(cov[start[u]:start[u] + npx[u]])) / norm < 0.7 for u in (p.a, p.b))
         if p.kind == "unequal" and not hemi:
             p.kind, p.note = "pair", "lengths differ: one copy is probably fragmented or incomplete"
+        if p.kind == "pair" and hemi and min(mb(p.a), mb(p.b)) >= 5:
+            # both copies at about half coverage: hemizygous, i.e. X with Y (or Z with W) of similar size
+            p.kind, p.note = "unequal", "both copies have about half the coverage of other pairs (hemizygous)"
+            sex_like.add(id(p))
         if p.kind == "unequal":
             # convention: both sex chromosomes go to HAP1; the larger one first
             first, second = (p.a, p.b) if npx[p.a] >= npx[p.b] else (p.b, p.a)
@@ -476,13 +979,25 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             if genes:
                 why += f"; BUSCO genes {genes.get(first, (0, 0))[0]}/{genes.get(second, (0, 0))[0]}"
             tags = ("HAP1", "HAP2")
-        order.append((first, False))
         # an unequal pair shares only a small region (e.g. a PAR): too little to orient by
-        flip = (not p.same_strand) and p.kind == "pair"
-        order.append((second, flip))
+        flip = (not p.same_strand) and (p.kind == "pair" or id(p) in sex_like)
         paint_of[first], paint_of[second] = 2 * k + 1, 2 * k + 2
         tag_of[first], tag_of[second] = tags
+        for copy, rev in ((first, False), (second, flip)):
+            order.append((copy, rev))
+            for v, u_ in joined.items():
+                if u_ == copy:
+                    paint_of[v], tag_of[v] = paint_of[copy], tag_of[copy]
+                    in_chain.add(v)
+            # unlocs: at the end of their copy of the chromosome, painted and tagged with it
+            for c in sorted(attach.get(copy, []), key=lambda c: -npx[c["u"]]):
+                order.append((c["u"], False))
+                paint_of[c["u"]], tag_of[c["u"]] = paint_of[copy], tag_of[copy]
+                unloc_units.add(c["u"])
         for e in sorted(extra.get(p.a, []) + extra.get(p.b, []), key=lambda e: -npx[e.b]):
+            if e.b in joined:
+                tag_of.setdefault(e.b, tag_of[second] if hap[e.b] == hap[second] else tag_of[first])
+                continue
             order.append((e.b, not e.same_strand))
             tag_of[e.b] = tag_of[second] if hap[e.b] == hap[second] else tag_of[first]
             rows.append(dict(action="place_next_to_homolog", scaffold=pt.names[e.b], length_mb=round(mb(e.b), 2),
@@ -500,7 +1015,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # Hemizygous sex chromosomes: no homolog of their own size, and about half the coverage
     # of a paired copy. Candidates are put together, larger first, both HAP1 (convention).
     covr = lambda s: float(np.median(cov[start[s]:start[s] + npx[s]])) / norm if norm else float("nan")
-    sex = [s for s in info["unpaired"] if mb(s) >= 5 and covr(s) < 0.7]
+    done = {x for x, _ in order} | set(joined)
+    sex = [s for s in info["unpaired"] if s not in done and mb(s) >= 5 and covr(s) < 0.7]
     k = len(main)
     for s in sorted(sex, key=lambda s: -npx[s]):
         partner = [t for t in sex if t != s and hap[t] != hap[s] and (s, t) in info["line"]]
@@ -517,8 +1033,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                          tag="HAP1", score=round(info["line"][(s, partner)], 1) if partner is not None else "",
                          next_best="", evidence=f"no homolog of similar size; coverage {covr(s):.2f} of a paired copy "
                                                 "(hemizygous); tagged HAP1 by convention; which is X/Y/Z/W is not determined"))
-    placed = {s for s, _ in order}
-    for s in info["unpaired"]:
+    placed = {s for s, _ in order} | set(joined)
+    for s in list(info["unpaired"]) + [u for u in info.get("repetitive", {}) if u not in info["unpaired"]]:
         if s in placed:
             continue
         c = float(np.median(cov[start[s]:start[s] + npx[s]])) / norm if norm else float("nan")
@@ -531,7 +1047,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                      f"match is {pt.names[info['repetitive'][s]]}; left unplaced")
         rows.append(dict(action="unpaired", scaffold=pt.names[s], length_mb=round(mb(s), 2), partner="", strand="",
                          tag="", score="", next_best="", evidence=f"coverage {c:.2f} of paired scaffolds; {guess}"))
-    rest = [int(s) for s in np.argsort(start) if npx[s] > 0 and int(s) not in placed]
+    rest = [int(s) for s in np.argsort(start) if npx[s] > 0 and int(s) not in placed and int(s) not in joined]
     perm = np.concatenate([pixels(s, rev) for s, rev in order] + [pixels(s) for s in rest])
     st = SaveState.blank()
     where = np.empty(raw.npix, dtype=np.int64)
@@ -549,7 +1065,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             st.scaffs.append((i, paint_of[s]))
         t = tag_of.get(s) or (("HAP" + str(haps.index(hap[s]) + 1)) if hap[s] and haps.index(hap[s]) < 2 else "")
         mask = (1 << st.tag_id(t)) if t else 0
-        if c.scaffold in dup_of:
+        if s in unloc_units:
+            mask |= 1 << st.tag_id("Unloc")
+        if c.scaffold in dup_of or s in look_units:
             mask |= 1 << st.tag_id("vertPaint")
         if mask:
             st.meta_flags.append((i, mask))

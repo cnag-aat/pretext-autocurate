@@ -114,6 +114,118 @@ class TestAllhaps(unittest.TestCase):
                 self.assertTrue(r["scaffold"].startswith("H1_") and r["tag"] == "HAP1/HAP2", r)
 
 
+TRO = os.path.join(ROOT, "seed", "fixtures", "qqTroRaco.hfsm.asm.bp.yhs_mq10.diploid_mq0.extensions.HR.pretext")
+
+
+@unittest.skipUnless(os.path.exists(TRO), "missing fixture")
+class TestAllhapsPseudoscorpion(unittest.TestCase):
+    """Troglobisium racovitzai: an allhaps map that needed heavy curation (38 cuts, joins, 47
+    unlocs), MQ0 only, no sequence. Scored against the curator's final savestate."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pt = Pretext(TRO)
+        cls.rows, cls.st, _ = curate_allhaps(cls.pt, phasing="hic")
+        cur = SaveState.load(TRO + ".savestate_final")
+        ms = MapState(cls.pt).replay(cur.edits)
+        paint, flags = dict(cur.scaffs), dict(cur.meta_flags)
+        cls.groups = collections.defaultdict(collections.Counter)      # scaffold -> {painted id: px}
+        size, tag = collections.Counter(), {}
+        for i, c in enumerate(ms.contigs):
+            k = paint.get(i)
+            if k:
+                cls.groups[cls.pt.names[c.scaffold]][k] += c.length
+                tags = cur.tag_names(flags.get(i, 0))
+                if "Unloc" not in tags:
+                    size[k] += c.length
+                tag.setdefault(k, "HAP1" if "HAP1" in tags else "HAP2")
+        cls.partner, ks, i = {}, sorted(size), 0
+        while i < len(ks) - 1:
+            a, b = ks[i], ks[i + 1]
+            if tag[a] != tag[b] and min(size[a], size[b]) > 0.6 * max(size[a], size[b]):
+                cls.partner[a], cls.partner[b] = b, a
+                i += 2
+            else:
+                i += 1
+
+    def test_pairs(self):
+        self.assertEqual(len(self.partner), 120)
+        good = bad = 0
+        for r in self.rows:
+            if r["action"] in ("pair", "pair_unequal"):
+                ga, gb = self.groups[r["scaffold"].split(":")[0]], self.groups[r["partner"].split(":")[0]]
+                # also homologous in the curation, though not painted as a HAP1/HAP2 pair of equal size:
+                # X (1) with Y (2); the two halves of H1_scaffold_1's autosome (3, 4) with H2_scaffold_4's
+                # (5); H1_scaffold_33 (70) with the pieces of H2_scaffold_6 (72, 73)
+                also = {(1, 2), (3, 5), (4, 5), (70, 72), (70, 73)}
+                if any(self.partner.get(x) in gb for x in ga) or any((min(x, y), max(x, y)) in also for x in ga for y in gb):
+                    good += 1
+                else:
+                    bad += 1
+        self.assertGreaterEqual(good, 58)
+        self.assertEqual(bad, 0)
+        xy = [r for r in self.rows if r["action"] == "pair_unequal"]
+        self.assertTrue(any(r["tag"] == "HAP1/HAP1" and "H2_scaffold_4" in r["scaffold"] + r["partner"] for r in xy))    # X with Y
+
+    def test_unlocs_join_the_curators_chromosome(self):
+        un = [r for r in self.rows if r["action"] in ("unloc", "join")]
+        self.assertGreaterEqual(len(un), 9)
+        for r in un:
+            g = set(self.groups[r["partner"].split(":")[0]])
+            g |= {self.partner.get(x) for x in g}                       # either copy of the chromosome
+            self.assertTrue(set(self.groups[r["scaffold"].split(":")[0]]) & g, r)
+
+    def test_rearrangements(self):
+        """Pieces of one chromosome copy are ordered and oriented by end contact (the other
+        haplotype breaks ties). These are arrangements the curator made."""
+        re = {r["scaffold"]: r["evidence"] for r in self.rows if r["action"] == "rearrange"}
+        self.assertGreaterEqual(len(re), 8)
+        # X: 25-58 Mb reversed, then 58-119 Mb
+        self.assertRegex(re["H1_scaffold_1:2"], r"new order: H1_scaffold_1 25\.0-58\.4 Mb reversed, H1_scaffold_1 58\.4-")
+        # the autosome half of H2_scaffold_4: its two pieces swapped (the curator inverted each in place)
+        self.assertRegex(re["H2_scaffold_4:2"], r"new order: H2_scaffold_4 45\.\d-58\.4 Mb, H2_scaffold_4 33\.\d-45\.\d Mb;")
+        # joins of whole scaffolds in front of their chromosome
+        self.assertTrue(re["H1_scaffold_32"].startswith("new order: H1_scaffold_65 0.0-9.7 Mb, H1_scaffold_32"))
+        self.assertTrue(re["H2_scaffold_31"].startswith("new order: H2_scaffold_61 0.0-12.1 Mb, H2_scaffold_31"))
+        joins = {r["scaffold"] for r in self.rows if r["action"] == "join"}
+        self.assertTrue({"H1_scaffold_65", "H2_scaffold_61", "H2_scaffold_68"} <= joins)
+        ms = MapState(self.pt).replay(self.st.edits)
+        self.assertTrue(np.array_equal(np.sort(ms.pix), np.arange(self.pt.npix)))
+        # switched off, nothing is rearranged
+        rows, _, _ = curate_allhaps(self.pt, phasing="hic", do_arrange=False)
+        self.assertFalse(any(r["action"] in ("rearrange", "join") for r in rows))
+
+    def _sites(self, rows):
+        """(action, pixel) of every break site, and the curator's cut pixels."""
+        ix = {n: i for i, n in enumerate(self.pt.names)}
+        px = lambda r: int(self.pt.scaffold_start[ix[r["scaffold"]]] + round(r["length_mb"] * 1e6 / self.pt.bp_per_pix))
+        return [(r["action"], px(r)) for r in rows if r["action"] in ("cut", "keep", "invert_tip")]
+
+    def test_cuts_without_telomeres(self):
+        """Contact-based sites (the telomere track is unusable here): every site is at a place
+        the curator cut, at the default level and at the conservative end."""
+        cur = SaveState.load(TRO + ".savestate_final")
+        ms = MapState(self.pt).replay(cur.edits)
+        truth = np.array(sorted(c.start for c in ms.contigs if self.pt.rel_coord[c.start] > 0)
+                         + sorted(c.start + c.length - 1 for c in ms.contigs))
+        orig = np.array([ms.pix[c.start] if not c.inverted else ms.pix[c.start + c.length - 1] for c in ms.contigs])
+        orig = orig[self.pt.rel_coord[orig] > 0]                       # piece starts that are not scaffold starts
+        near = lambda q: np.abs(orig - q).min() <= 12
+        sites = self._sites(self.rows)
+        cuts = [q for a, q in sites if a == "cut"]
+        self.assertGreaterEqual(len(cuts), 11)
+        self.assertTrue(all(near(q) for q in cuts))                    # no false cut
+        self.assertTrue(all(near(q) for _, q in sites))                # flagged sites are real too
+        self.assertGreaterEqual(sum(a == "invert_tip" for a, _ in sites), 3)
+        # the level is one axis: conservative cuts are a subset, aggressive ones a superset
+        lo = [q for a, q in self._sites(curate_allhaps(self.pt, phasing="hic", level=0.0)[0]) if a == "cut"]
+        hi = [q for a, q in self._sites(curate_allhaps(self.pt, phasing="hic", level=1.0)[0]) if a == "cut"]
+        self.assertTrue(8 <= len(lo) < len(cuts) < len(hi))
+        self.assertGreaterEqual(len(set(lo) & set(cuts)), len(lo) - 1)
+        self.assertLessEqual(sum(not near(q) for q in hi), 2)
+        self.assertTrue(all(near(q) for q in lo))
+
+
 PAF = os.path.join(ROOT, "seed", "fixtures", "bAegFun_asm2_run1.H2_vs_H1.asm5.paf")
 
 
@@ -152,6 +264,53 @@ class TestAllhapsSequence(unittest.TestCase):
         self.assertFalse(any("H2_scaffold_37" in k for k in got))
         why = [r["evidence"] for r in self.rows if r["action"] == "unpaired" and r["scaffold"] == "H2_scaffold_37"]
         self.assertTrue(why and "too repetitive" in why[0])
+
+    def test_small_scaffolds(self):
+        """With the small-against-all alignment: unlocs where sequence and Hi-C agree (or Hi-C is
+        strong on both maps), candidates only flagged, and the same-prefix pair H1_33/H1_40."""
+        from pretext_autocurate.homology import read_paf
+        sp = os.path.join(ROOT, "seed", "fixtures", "bAegFun_asm2_run1.small_vs_all.asm5.paf")
+        if not os.path.exists(sp):
+            self.skipTest("missing small-scaffold alignment")
+        hi = Pretext(M0.replace("diploid_mq0", "diploid_mq10"), load_graphs=False)
+        rows, st, _ = curate_allhaps(self.pt, phasing="hic", hi=hi, blocks=read_paf(PAF, min_mapq=0),
+                                     small_blocks=read_paf(sp, min_mapq=0))
+        un = {r["scaffold"]: r["partner"] for r in rows if r["action"] in ("unloc", "join")}
+        # H2_scaffold_34 (3.9 Mb) is large enough to be placed by end contact: joined in front of W
+        re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
+        self.assertTrue(re["H2_scaffold_8"].startswith("new order: H2_scaffold_34"))
+        self.assertEqual(len(re), 1)
+        # the curator's own placements (savestate_6) that have evidence, with the same copy; a small
+        # piece may go to the other prefix's copy (curator, 2026-11-13)
+        for s, copy in (("H2_scaffold_34", "H2_scaffold_8"), ("H2_scaffold_61", "H2_scaffold_5"),
+                        ("H2_scaffold_70", "H2_scaffold_30:2"), ("H1_scaffold_44", "H2_scaffold_40"),
+                        ("H1_scaffold_209", "H2_scaffold_13")):
+            self.assertEqual(un.get(s), copy, s)
+        self.assertLessEqual(len(un), 12)
+        t_rows, _, _ = curate_allhaps(self.pt, phasing="trio", hi=hi, blocks=read_paf(PAF, min_mapq=0),
+                                      small_blocks=read_paf(sp, min_mapq=0), do_cuts=False)
+        self.assertTrue(all(r["scaffold"][:2] == r["partner"][:2] for r in t_rows
+                            if r["action"] == "unloc" and "scaffold_8" not in r["partner"]))      # trio: no mixing
+        cand = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "unloc_candidate"}
+        self.assertIn("H2_scaffold_53", cand)                          # sequence only: flagged, not moved
+        self.assertIn("collapsed repeats", cand["H1_scaffold_62"])     # repeat-like coverage: not moved
+        pairs = {frozenset((r["scaffold"], r["partner"])): r["evidence"] for r in rows if r["action"] == "pair"}
+        self.assertIn("same haplotype file", pairs[frozenset(("H1_scaffold_33", "H1_scaffold_40"))])
+        # layout: every unloc is painted like its copy, tagged Unloc, and sits right after it
+        ms = MapState(self.pt).replay(st.edits)
+        paint, flags = dict(st.scaffs), dict(st.meta_flags)
+        name = lambda c: self.pt.names[c.scaffold]
+        idx = {}
+        for i, c in enumerate(ms.contigs):
+            idx.setdefault(name(c), []).append(i)
+        for s, copy in un.items():
+            i = idx[s][0]
+            if s != "H2_scaffold_34":
+                self.assertIn("Unloc", st.tag_names(flags[i]), s)
+            js = idx[copy.split(":")[0]]
+            self.assertTrue(any(paint.get(j) == paint[i] for j in js), s)
+            self.assertLessEqual(min(abs(i - j) for j in js), len(un), s)
+        self.assertTrue(np.array_equal(np.sort(ms.pix), np.arange(self.pt.npix)))
 
     def test_busco(self):
         """BUSCO counts per haplotype; in this assembly the copies of a pair hardly differ, so the

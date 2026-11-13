@@ -72,6 +72,8 @@ report when the map disagrees with that expectation instead of forcing it.
     can be HAP1. This is the setting for the bAegFun bird.
   - `none`: unphased. Mix and match freely to build the best HAP1, as long as it stays
     reasonably balanced with HAP2.
+- Exception for `hic` (curator, 2026-11-13): a small piece (an unloc) may go to the other
+  prefix's copy of its chromosome when the evidence points there. Not under `trio`.
 - In every mode, avoid introducing haplotype switches inside a superscaffold.
 - With low heterozygosity the assembler sometimes collapses a chromosome (one copy where
   two are expected). Do not force a pair; note it in the report.

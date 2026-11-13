@@ -688,3 +688,250 @@ Fixtures: `seed/fixtures/bAegFun_asm2_run1.hfsm.asm.hic.hap{1,2}.yhs_mq10.aves_o
   H1_scaffold_14 (9 genes), H2_scaffold_43 on H2_scaffold_3 (5), H1_scaffold_209 on
   H1_scaffold_12 (4).
 - 13 bird tests pass.
+
+## 2026-11-13: small scaffolds in allhaps (alignment against everything, unlocs, same-prefix pair)
+
+Note from the curator: an allhaps test that needs extensive curation (like the gastropod)
+would be more robust than the bird. The other haplotype of xgTylRafi may be recoverable
+(S3, reads, remapping: slow); the curator will also look for another recent genome.
+
+Baseline before changes: 13 allhaps tests pass.
+
+Done
+- `homology.align_small`: every sequence under 10 Mb against the whole diploid assembly,
+  `minimap2 -x asm5 -D -N 5 -p 0.5` (-D drops a sequence's alignment to itself; secondary
+  alignments kept, marked in `Block.primary`). About 11 minutes for the bird with 6
+  threads, 13 GB index. Fixture `seed/fixtures/bAegFun_asm2_run1.small_vs_all.asm5.paf`.
+  CLI: run from `--fasta` unless `--no-small-align`; `--small-paf` takes an existing one.
+- `allhaps.same_prefix_pairs`: two unpaired scaffolds of one prefix, each other's best
+  match, at least half of the shorter aligned at mapq >= 30. Gives H1_scaffold_33 /
+  H1_scaffold_40 (the pair the H2-against-H1 alignment could not see) and nothing else.
+- `allhaps.place_small`: chromosome of each remaining small scaffold from two lines of
+  evidence. Sequence: share of the scaffold aligned to a chromosome's copies (>= 50%, 2x
+  the next chromosome). Hi-C: mean MQ0 contact per chromosome (best copy), best / next.
+  - `unloc` (moved to the end of its copy, painted with it, tagged Unloc + HAP): sequence
+    and Hi-C (>= 1.5x) agree; or, for pieces >= 20 px, Hi-C alone at >= 2.5x on MQ0 and
+    >= 2x on the high-MQ map for the same chromosome.
+  - `unloc_candidate` (not moved, `vertPaint`): sequence only, or coverage >= 1.5x a
+    normal copy (repeat-like).
+  - A piece aligned to both copies of the chromosome is noted as a third copy (haplotig or
+    false duplication) and highlighted.
+  - The copy is the one with the piece's own prefix (no mixing under any phasing for now);
+    for a sex-chromosome pair it is the copy with the evidence.
+
+What the measurements showed (392 unpaired small scaffolds)
+- Most are repeats: at MQ0 they contact the dot chromosome H2_scaffold_30:1 /
+  H1_scaffold_24:2 at 1.2-1.6x the next chromosome and show nothing at MQ10. A ratio
+  under 2.5 at MQ0 without sequence support is therefore not evidence.
+- Many align mostly to themselves (internal repeats); those alignments are ignored.
+
+Result on bAegFun (`out_bird_seq/`, with both PAFs and the BUSCO tables)
+- 41 pairs + Z/W (new: H1_scaffold_33/H1_scaffold_40), 5 cuts, 2 tip inversions, 3 kept.
+- 8 unlocs. 5 are scaffolds the curator placed in the same chromosome: H2_scaffold_34
+  (W; Hi-C alone, 3.6x and 6.9x), H2_scaffold_61, H2_scaffold_70, H1_scaffold_44,
+  H1_scaffold_209. 3 are not in the curation: H1_scaffold_192 (also a BUSCO false
+  duplication candidate), H1_scaffold_310 (1 px), H2_scaffold_86 (third copy).
+- Differences in which copy: the curator put H1_scaffold_44 and H1_scaffold_209 with the
+  H2_ copy (H1_44 inside the chromosome, not as Unloc); the tool keeps each with its own
+  prefix. To ask: is mixing wanted for such pieces under `--phasing hic`?
+- 15 candidates flagged, among them H2_scaffold_53 (the curator's Unloc; no Hi-C support).
+- Curator placements with no evidence in either line: H1_scaffold_55 (38% self-aligned
+  repeats, 3% to its chromosome), H1_scaffold_141, H1_scaffold_155.
+- 14 allhaps tests pass (`tests.test_allhaps`, new `test_small_scaffolds`). The single-mode tests were not
+  rerun; no single-mode code changed. Savestates in `out_bird_seq/` not yet opened in PretextView.
+
+## 2026-11-13: small pieces may cross prefixes (curator's decision)
+
+Curator: under `--phasing hic` a small piece may go to the other prefix's copy of its
+chromosome. Never under `trio`. Large scaffolds still do not mix.
+- `place_small` chooses the copy: sequence found in one copy only -> the copy that lacks
+  it; found in both (third copy) -> the copy it contacts at least 1.5x more on the high-MQ
+  map, else the shorter copy; Hi-C alone or `trio` -> its own prefix. The evidence text
+  says how the copy was chosen and when prefixes are mixed.
+- Bird: the five curator placements with evidence now sit on the curator's copy too
+  (H1_scaffold_44 with H2_scaffold_40, H1_scaffold_209 with H2_scaffold_13, H2_scaffold_70
+  with H2_scaffold_30:2 by high-MQ contact, H2_scaffold_61 with H2_scaffold_5,
+  H2_scaffold_34 with W). The other three: H1_scaffold_192 with H2_scaffold_14,
+  H2_scaffold_86 with H1_scaffold_21, H1_scaffold_310 (1 px) with H2_scaffold_5.
+- Still Unloc at the end of the copy: the position inside the chromosome (H1_scaffold_44
+  in the curation) is not resolved.
+
+## 2026-11-13: first run on Troglobisium racovitzai (qqTroRaco, allhaps, MQ0 only)
+
+Fixture from the curator: `seed/fixtures/qqTroRaco*.pretext` (4.36 Gb diploid, 66.6 kb/px,
+765 scaffolds, textures of 2048 px) and `.savestate_final`: 129 painted units = 60 pairs
++ X, Y and a few single groups, 38 cuts in 22 scaffolds (27 at gaps), many joins, 47
+unlocs, 8 superscaffolds with mixed prefixes. H1_scaffold_1 holds X plus both haplotypes
+of another chromosome. No sequence, no high-MQ map.
+
+Run as is (`run --mode allhaps --map ...`, about 1 minute, `out_tro/`)
+- 61 pairs + 1 unequal. 60 are consistent with the curator's pairs; 56 of the curator's
+  60 pairs are found. Wrong: H1_scaffold_1 with H2_scaffold_4 called an unequal pair
+  (really X plus an autosome pair, against Y plus an autosome), and H1_scaffold_33 with
+  H2_scaffold_6 (cut 7 times by the curator).
+- Unlocs by Hi-C alone (pieces >= 20 px, 2.5x): 10, every one in the curator's chromosome
+  and copy. The curator placed most of them inside the chromosome (joins), not as Unloc.
+- New guard, found here: H1_scaffold_30 (32 Mb) and H1_scaffold_44 (25 Mb) were first
+  attached as unlocs to the wrong chromosome. Each is the homolog of one half of a
+  misjoined scaffold of the other haplotype (H2_scaffold_1, H2_scaffold_2). Such a piece
+  touches only the other haplotype's copy: contact with its own haplotype's copy is
+  0.05-0.06 of that, against 0.36-0.75 for the ten real pieces. Rule: below 0.2 the piece
+  is not moved and is reported as pointing at a misjoin in the other copy.
+- 0 cuts. The telomere-at-gap rule finds nothing: the telomere track is noisy here (99th
+  percentile 37, 62880 non-zero pixels, threshold 185; only 2 curator cuts reach it), so
+  the motif is probably not this species' telomere repeat. But contact across is clearly
+  reduced at most curator cuts: 8 cuts not at gaps have 0.01-0.09 (30 px window), and most
+  gap cuts 0.2-0.6. Unlike the bird's, this MQ0 map shows misjoins by contact.
+
+Next for allhaps cuts (the main gap this genome exposes)
+1. Cut on contact without telomere support: the single-mode detector on the allhaps MQ0
+   map (windows 10 and 30 px), gaps first.
+2. Confirm with the homolog: the two sides of a misjoin have different homologs, and an
+   unpaired chromosome-sized piece that touches only the other copy marks the place.
+3. Then joins of the cut pieces (most of the curator's 216 moves).
+- Tests: `TestAllhapsPseudoscorpion` (2 tests, 1 minute).
+
+## 2026-11-13: contact-based cuts for allhaps; one conservative-to-aggressive setting; sweep
+
+Curator's guidance
+- Telomere tracks are not always reliable. Vertebrates and butterflies are now easy;
+  other arthropods, other invertebrates and various other phyla are hard. More examples
+  will follow, to make the tool robust.
+- Wanted: one global setting on the conservative-to-aggressive axis, and, if runs are fast,
+  a sweep over it so the curator can pick the savestate to start from.
+- More Troglobisium inputs arrived: per-haplotype BUSCO tables (arachnida_odb10) and the
+  diploid FASTA. Not used yet (next: alignments, as for the bird).
+
+Measurements on Troglobisium (217 gap pixels, 36 distinct curator cut sites, 26 at gaps)
+- Contact across the gap (10 px window, minimum within 2 px) separates them: curator cuts
+  at gaps are mostly 0.19-0.60; other gaps are 0.64 or more with four exceptions.
+- 8 curator cuts away from gaps have contact at background on both scales (0.01-0.09).
+- The Hi-C homolog of a 20 px window (best diagonal line elsewhere in the map) is too
+  ambiguous at MQ0 to use alone: the best line is often only 1.0-1.3x the next, and it
+  "jumps" at many gaps the curator left alone. Not used.
+- The single-mode detector as it is finds 4-12 of them (it needs both windows low).
+
+Done
+- `allhaps.Level` and `curate_allhaps(level=...)`; CLI `--level` (0 conservative, 0.5
+  default, 1 aggressive). It moves together: contact below which a gap is a candidate
+  (0.45 / 0.6 / 0.75), sharp breaks away from gaps (0.05 / 0.1 / 0.2), cuts of short end
+  pieces (0.35 / 0.5 / 0.65), pairing margin (1.5 / 1.3 / 1.15), unloc thresholds.
+- `telomere_sites` now takes every gap with reduced contact as a candidate site; a
+  telomere signal is supporting evidence only. Gap pixels within 5 px are one site. Sharp
+  breaks away from gaps (both windows at background, normal contact each side, dense map
+  only) are cut outright. The decision for gap sites is as before (different homologs or
+  no chromosome-level contact: cut; end piece fits better inverted: invert_tip; else keep
+  and flag), plus: when one side is too short to measure chromosome-level contact, cut on
+  the contact across the gap. (Before, a NaN there fell through to "cut".)
+- A pair whose two copies both have about half coverage is tagged as sex chromosomes
+  (both HAP1) even when the copies are of similar size (X and Y here).
+- `--sweep 0,0.25,0.5,0.75,1`: one directory and savestate per level plus `sweep.tsv`.
+  Signal objects and the mip matrix are kept on the map object, so after the first level
+  (about 90 s on Troglobisium) each further level takes about 20 s.
+
+Result on Troglobisium, map only (36 curator cut sites)
+| level | cuts | false | tip inversions | kept (flagged) |
+|---|---|---|---|---|
+| 0 | 9 | 0 | 2 | 2 |
+| 0.25 | 9 | 0 | 4 | 8 |
+| 0.5 | 12 | 0 | 4 | 9 |
+| 0.75 | 14 | 1 | 3 | 11 |
+| 1 | 15 | 1 | 4 | 14 (4 not at curator cuts) |
+- At the default every one of the 25 sites is a place the curator cut. Three tip
+  inversions are exactly what the curator did (H1_scaffold_22, H1_scaffold_26,
+  H2_scaffold_26). The false cut at 0.75 and above is H1_scaffold_2 at 21.8 Mb.
+- With the cuts, H2_scaffold_1 and H2_scaffold_2 are split and H1_scaffold_30 /
+  H1_scaffold_44 pair with the right halves; X (H1_scaffold_1 25-58 Mb) pairs with Y
+  (H2_scaffold_4 0-33 Mb). 68 pairs, all consistent with the curation.
+- The 9 kept sites are all real: the curator cut there and rearranged pieces within the
+  chromosome (H2_scaffold_6, H2_scaffold_46, H2_scaffold_47, H2_scaffold_4 45.3 Mb,
+  H1_scaffold_1 109.8 Mb), or the two sides are the two haplotypes of one chromosome
+  joined in one scaffold (H1_scaffold_1 at 12.4 Mb).
+- Not found (11 sites): contact across is normal or one side is short (H1_scaffold_10
+  34.9 Mb, H2_scaffold_8 3.5 Mb, H2_scaffold_10, H2_scaffold_44 11.4 Mb, H2_scaffold_64,
+  H2_scaffold_6 46.7 Mb and the three small pieces at 25.8-26.1 Mb, H1_scaffold_118).
+
+Next
+1. Order and orientation of the pieces of one chromosome (the kept sites; most of the
+   curator's 216 moves): cut every candidate, then chain the pieces by end contact within
+   the pair, using the other haplotype as the guide.
+2. Two haplotypes joined in one scaffold: a homolog line between the two sides of a site.
+3. Troglobisium with sequence: minimap2 between haplotypes and small-against-all, BUSCO.
+
+## 2026-11-13: order and orientation of pieces within a chromosome copy (allhaps)
+
+Done
+- `allhaps.arrange_pieces`: exact search (all orders and orientations, up to 9 pieces) for
+  the arrangement with the most contact between neighbouring ends (`_adjacency`: end
+  windows up to 100 px, outermost pixels skipped, relative to the decay expectation).
+- In `curate_allhaps` each chromosome copy is split at its kept / tip-inverted sites;
+  attached unlocs and "further pieces" of at least 40 px (60 / 40 / 20 by level) join the
+  search. The result replaces the assembled arrangement only if the summed end contact
+  rises by 0.15 (0.3 / 0.15 / 0.05). The largest piece keeps its orientation.
+- Orientation: where flipping a piece changes the sum by less than 0.12 (0.2 / 0.12 /
+  0.05) end contact cannot orient it. Then the other haplotype decides: `_homolog_dir`
+  finds the piece's homology line in the other copy (sharpest diagonal or anti-diagonal,
+  at least 2x the other direction) and the piece is turned to run the same way as the
+  nearest clearly oriented piece. Without a clear line it keeps its orientation and the
+  row says so.
+- Rows: `rearrange` (new order, link scores, score as assembled) and `join` for an
+  attached scaffold that went into the chain (no Unloc tag). `do_arrange=False` skips it.
+- Fixed on the way: the contact-only candidate rule on the bird's sparse MQ10 map (a gap
+  without a telomere must have reduced contact on the MQ0 map too); a site that is both a
+  candidate on its own and the homologous point of a misjoin is cut again (H2_scaffold_1).
+
+Why end contact alone is not enough for orientation: for pieces of 4-9 Mb the two ends
+often touch the neighbour equally (H2_scaffold_70 with H2_scaffold_67: 1.24 and 1.23).
+Which end of the neighbour they belong to is clear (1.2 against 0.5).
+
+Result on Troglobisium, map only, scored with `tools/compare_layouts.py` (new junctions
+between untagged contigs of 15 px or more; the curation has 49)
+| level | cuts | rearranged copies | joins | tool junctions in the curation | curator junctions reproduced |
+|---|---|---|---|---|---|
+| 0 | 9 | 5 | 3 | 5 of 7 | 15 |
+| 0.5 | 12 | 10 | 5 | 10 of 15 | 17 |
+| 1 | 15 | 19 | 14 | 14 of 28 | 20 |
+- Right at the default: X (25-58 Mb reversed, then 58-119 Mb), H2_scaffold_4 autosome
+  half, the order of H2_scaffold_6 26-57 Mb, H1_scaffold_65 + H1_scaffold_32,
+  H2_scaffold_61 + H2_scaffold_31, H2_scaffold_68 + H2_scaffold_11, H2_scaffold_71 +
+  H2_scaffold_55, and the four tip inversions.
+- Wrong or unresolved at the default: orientation of H2_scaffold_6 31-38 Mb and 0-8 Mb,
+  of the 6 Mb piece of H2_scaffold_44, and of H2_scaffold_67 against H2_scaffold_70.
+- Not attempted: pieces of one chromosome spread over several scaffolds that are not yet
+  attached to the copy (H2_scaffold_46 into X between H1_scaffold_1 pieces, H2_scaffold_59
+  / _69 / _8, H1_scaffold_2 with H1_scaffold_72), pieces under 40 px, the two haplotypes
+  of one chromosome inside H1_scaffold_1 (0-12.4 and 12.4-25 Mb).
+- Bird (with both PAFs): one rearrangement, H2_scaffold_34 joined in front of W
+  (H2_scaffold_8), where the curator has it; cuts and tip inversions unchanged.
+
+Troglobisium alignment (H2 against H1, minimap2 asm5, 6 threads): still running after
+45 minutes when this was written; PAF will be `work/qqTroRaco/H2_vs_H1.asm5.paf`.
+
+## 2026-11-13: Troglobisium with sequence (first look)
+
+- 18 allhaps tests pass on the code with rearrangements (bird and Troglobisium; the run
+  took 31 minutes because it shared the machine with minimap2). Single-mode tests not rerun.
+- `tools/align_tro.py`: H2 against H1 with `minimap2 -x asm5`, 6 threads, finished after
+  about 90 minutes. Fixture `seed/fixtures/qqTroRaco.H2_vs_H1.asm5.paf` (1.6 MB).
+- The alignment is complete, not thin: 10596 alignments, 2161 Mb of H2 aligned, of which
+  2147 Mb in the 1329 blocks of 10 kb or more (about 1.6 Mb per block). asm5 is adequate
+  for this genome. Run time 94 minutes, peak memory 10 GB.
+- Run with `--paf` and the two arachnida_odb10 BUSCO tables (`out_tro_seq/`): 69 pairs,
+  12 cuts, 10 rearrangements, 15 pieces placed next to their homolog, 29 unpaired. The
+  unpaired count is not comparable with the map-only run (3): with sequence every scaffold
+  of 500 kb or more is considered, with Hi-C only those of 4 bins (about 2 Mb) or more.
+  Layout score 9 of 15 tool junctions in the curation and 15 curator junctions
+  reproduced, against 10 of 15 and 17 from the map alone. Why it is not better has not
+  been looked at yet; cuts and rearrangements do not use the alignment at all so far.
+- BUSCO: H1 2705 complete of 2726 found (211 duplicated), H2 2698 (200 duplicated). About
+  200 duplicated genes per haplotype is far more than the bird's 25-32: worth a look for
+  real duplications against false ones before using them as evidence here.
+
+To do with sequence (the alignment is there and good; it is barely used yet)
+1. Use alignment blocks as the orientation and order guide in `arrange_pieces` (now Hi-C
+   only): this should settle the 4-9 Mb pieces whose ends tie.
+2. Use them for cut decisions (the two sides of a site aligning to different places) and
+   for chains across scaffolds of one chromosome.
+3. Find out why the layout score with `--paf` is slightly below the map-only score.
+4. Small-against-all alignment for Troglobisium (not run; the 4.4 Gb index needs more than
+   this machine's 24 GB in one piece).

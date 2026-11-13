@@ -105,7 +105,20 @@ def cmd_run(a):
     pt = maps[0]
     if a.mode == "allhaps":
         from .allhaps import curate_allhaps, write_rows
-        blocks = None
+        blocks = small = None
+        if a.small_paf or (a.fasta and not a.no_small_align):
+            from .homology import align_small, read_paf
+            sp = a.small_paf
+            if not sp:
+                print("aligning small scaffolds against the whole assembly (slow the first time; --no-small-align skips it)",
+                      file=sys.stderr)
+                try:
+                    sp = align_small(a.fasta, a.work_dir or os.path.join(a.out_dir, "work"), threads=a.threads,
+                                     minimap2=a.minimap2)
+                except RuntimeError as e:
+                    sys.exit(f"error: {e}")
+            small = read_paf(sp, min_mapq=0)
+            print(f"small scaffolds: {len(small)} alignment blocks from {sp}", file=sys.stderr)
         if a.paf or a.fasta:
             from .homology import align_haplotypes, read_paf, fasta_lengths
             paf = a.paf
@@ -145,19 +158,32 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             hits = busco.read_hits(mp)
             print(f"BUSCO: complete hits for {len(hits)} genes from {mp}", file=sys.stderr)
-        rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
-                                        busco_hits=hits)
-        os.makedirs(a.out_dir, exist_ok=True)
-        prefix = os.path.join(a.out_dir, a.prefix)
-        write_rows(rows, prefix + ".decisions.tsv")
-        write_agp(build_layout(pt, st), prefix + ".agp")
-        for m in maps:
-            st.save(os.path.join(a.out_dir, os.path.basename(m.path) + ".savestate_autocurate"), m.path)
-        n = collections.Counter(r["action"] for r in rows)
-        print("\t".join(f"{k} {v}" for k, v in sorted(n.items())))
-        print(f"allhaps so far: telomere-supported cuts, pairing, orientation, tags (no joins, unlocs or haplotigs yet). "
-              f"edits {len(st.edits)}, painted {len(st.scaffs)}, tags {len(st.meta_flags)}; outputs in {a.out_dir}",
-              file=sys.stderr)
+        levels = [float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
+        summary = []
+        for lv in levels:
+            rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
+                                            busco_hits=hits, small_blocks=small, level=lv)
+            out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
+            os.makedirs(out_dir, exist_ok=True)
+            prefix = os.path.join(out_dir, a.prefix)
+            write_rows(rows, prefix + ".decisions.tsv")
+            write_agp(build_layout(pt, st), prefix + ".agp")
+            for m in maps:
+                name = os.path.basename(m.path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
+                st.save(os.path.join(out_dir, name), m.path)
+            n = collections.Counter(r["action"] for r in rows)
+            summary.append((lv, n, len(st.edits)))
+            print(f"level {lv:.2f}\t" + "\t".join(f"{k} {v}" for k, v in sorted(n.items())))
+            print(f"allhaps so far: cuts, pairing, order and orientation within a copy, tags, unlocs (no haplotig tags yet). "
+                  f"edits {len(st.edits)}, painted {len(st.scaffs)}, tags {len(st.meta_flags)}; outputs in {out_dir}",
+                  file=sys.stderr)
+        if a.sweep:
+            acts = sorted({k for _, n, _ in summary for k in n})
+            with open(os.path.join(a.out_dir, a.prefix + ".sweep.tsv"), "w") as f:
+                f.write("level\tedits\t" + "\t".join(acts) + "\n")
+                for lv, n, e in summary:
+                    f.write(f"{lv:.2f}\t{e}\t" + "\t".join(str(n.get(k, 0)) for k in acts) + "\n")
+            print(f"sweep summary: {os.path.join(a.out_dir, a.prefix + '.sweep.tsv')}", file=sys.stderr)
         return
     decisions, st = curate_single(pt, apply_inserts=a.apply_inserts)
     os.makedirs(a.out_dir, exist_ok=True)
@@ -208,9 +234,18 @@ def main(argv=None):
     p.add_argument("--phasing", choices=["none", "hic", "trio"], default="hic",
                    help="allhaps only: how freely sequence may move between haplotypes. "
                         "trio: never; hic: whole chromosomes only, no H1_/H2_ mixing within one; none: freely")
+    p.add_argument("--level", type=float, default=0.5,
+                   help="allhaps: how readily to act, 0 (conservative: only the clearest evidence, flag the rest) to 1 "
+                        "(aggressive); moves every act-or-flag threshold together [0.5]")
+    p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
+                                   "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
     p.add_argument("--fasta", help="allhaps: the assembly the maps were made from (plain or .gz); "
                                    "haplotypes are aligned with minimap2 and homology is read from that")
     p.add_argument("--paf", help="allhaps: an existing alignment between haplotypes, used in place of --fasta")
+    p.add_argument("--small-paf", help="allhaps: an existing alignment of the small scaffolds against the whole assembly "
+                                       "(minimap2 -D, secondary alignments kept), used in place of running it from --fasta")
+    p.add_argument("--no-small-align", action="store_true",
+                   help="allhaps with --fasta: do not align the small scaffolds against the whole assembly")
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--work-dir", help="where alignments are kept and reused (default: OUT_DIR/work)")
     p.add_argument("--minimap2", help="path to minimap2 (default: PATH, then conda env pretext-autocurate)")

@@ -99,6 +99,40 @@ def align_haplotypes(fasta, workdir, hap_regex=r"^(H\d+)_", threads=8, minimap2=
     return paf
 
 
+def align_small(fasta, workdir, max_bp=10_000_000, threads=8, minimap2=None, preset="asm5"):
+    """minimap2 of every sequence shorter than max_bp against the whole assembly (both
+    haplotypes), ignoring each sequence's alignment to itself (-D) and keeping secondary
+    alignments. This shows what the H2-against-H1 alignment cannot: a small scaffold's
+    copies in its own haplotype (false duplications, haplotigs, same-prefix homologs) next
+    to its homolog in the other. Returns the PAF path (cached)."""
+    exe = find_tool("minimap2", minimap2)
+    if exe is None:
+        raise RuntimeError("minimap2 not found (PATH, --minimap2, or conda env 'pretext-autocurate'). "
+                           "Install it, or give an existing alignment with --small-paf.")
+    os.makedirs(workdir, exist_ok=True)
+    paf = os.path.join(workdir, f"small_vs_all.{preset}.paf")
+    if os.path.exists(paf) and os.path.getsize(paf) > 0:
+        return paf
+    lens = fasta_lengths(fasta)
+    small = os.path.join(workdir, "small.fa")
+    with _open(fasta) as f, open(small, "w") as out:
+        keep = False
+        for line in f:
+            if line.startswith(">"):
+                keep = lens[line[1:].split()[0]] < max_bp
+            if keep:
+                out.write(line)
+    tmp = paf + ".tmp"
+    try:
+        with open(tmp, "w") as out, open(paf + ".log", "w") as log:
+            subprocess.run([exe, "-x", preset, "-t", str(threads), "-D", "-N", "5", "-p", "0.5", fasta, small],
+                           stdout=out, stderr=log, check=True)
+    finally:
+        os.remove(small)
+    os.replace(tmp, paf)
+    return paf
+
+
 @dataclass
 class Block:
     q: str
@@ -110,6 +144,7 @@ class Block:
     same_strand: bool
     matches: int
     mapq: int
+    primary: bool = True
 
 
 def read_paf(path, min_len=10000, min_mapq=30):
@@ -120,7 +155,8 @@ def read_paf(path, min_len=10000, min_mapq=30):
         for line in f:
             c = line.split("\t", 12)
             if int(c[10]) >= min_len and int(c[11]) >= min_mapq:
-                out.append(Block(c[0], int(c[2]), int(c[3]), c[5], int(c[7]), int(c[8]), c[4] == "+", int(c[9]), int(c[11])))
+                out.append(Block(c[0], int(c[2]), int(c[3]), c[5], int(c[7]), int(c[8]), c[4] == "+", int(c[9]), int(c[11]),
+                                 "tp:A:S" not in (c[12] if len(c) > 12 else "")))
     return out
 
 

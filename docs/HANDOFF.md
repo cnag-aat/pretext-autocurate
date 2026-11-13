@@ -18,8 +18,8 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `place.py` | `place_scaffolds`: anchor (chromosome) for each small piece; localise only at reduced-contact junctions |
 | `join.py` | `find_joins`: mutual-best end contact between pieces > 150 px, telomeric ends never joined, chains with orientation |
 | `curate.py` | `curate_single`: the whole single-haplotype pass -> decisions + savestate |
-| `allhaps.py` | allhaps pass: telomere sites (cut / invert_tip / keep), homolog pairing (Hi-C or sequence), parallel layout, HAP tags |
-| `homology.py` | minimap2 between haplotypes, PAF reading, external tool lookup |
+| `allhaps.py` | `Level` (the one conservative-to-aggressive setting), `arrange_pieces` (order/orientation within a copy), and the allhaps pass: telomere sites (cut / invert_tip / keep), homolog pairing (Hi-C or sequence), same-prefix pairs, small scaffolds as unlocs (`place_small`), parallel layout, HAP tags |
+| `homology.py` | minimap2 between haplotypes (`align_haplotypes`) and of small scaffolds against everything (`align_small`), PAF reading, external tool lookup |
 | `busco.py` | BUSCO lineage (path or name, opt-in download), miniprot, gene counts per haplotype and scaffold |
 | `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` |
 
@@ -31,7 +31,8 @@ then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags
 ## How to run and check
 
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --map MAP.pretext --out-dir out
-    python3 -m unittest discover -s tests            # 42 tests, about 5 minutes
+    python3 -m unittest discover -s tests            # about 10 minutes; tests.test_allhaps alone about 5
+    ... run --mode allhaps --map MQ0 --map MQ10 --paf H2_vs_H1.paf --small-paf small_vs_all.paf --busco-table H1=... --busco-table H2=...
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
     python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
 
@@ -46,7 +47,14 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   = the same plus reviewed Haplotig/Unloc tags. **The last is the reference for scoring.**
   Its paint ids split one chromosome (scaffold_3) into two ids; ignore that.
 - bAegFun (bird, allhaps H1_/H2_, MQ0 + MQ10, 65536 px) with curator `.savestate_6`.
+- qqTroRaco (Troglobisium racovitzai, a pseudoscorpion; allhaps, MQ0 only) with curator
+  `.savestate_final`. Added 2026-11-13 as the harder allhaps test.
 - CAE71 savestates only; the CAE71 maps are not in the repo.
+- Wanted (curator, 2026-11-13): an allhaps test that needs extensive curation, as the
+  gastropod does. The bird is too well behaved for that. The curator will check whether
+  the other haplotype of xgTylRafi can be recovered (S3 restore, read download and
+  remapping: slow, so not expected soon) and will look for another genome among the lab's
+  recent assemblies. Until then allhaps cuts/joins/placement are tested on the bird only.
 
 ## Conventions agreed with the curator (also in PLAN.md section 0)
 
@@ -56,7 +64,15 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   proposed insertion loci). Standalone pieces needing a look get the `vertPaint` tag.
 - Unlocs and haplotigs go at the end of their chromosome, painted with it.
 - Telomeric/subtelomeric end contacts are common at MQ0 and are not join evidence.
+- Telomere tracks are not reliable in every species: telomere signal is supporting
+  evidence, never a requirement. Vertebrates and butterflies are easy; other arthropods,
+  other invertebrates and other phyla are the hard cases to design for.
+- One setting, `--level` (0 conservative .. 1 aggressive), moves every act-or-flag
+  threshold; new thresholds must be read through `allhaps.Level`. `--sweep` writes one
+  savestate per level for the curator to choose from, so keep a level fast (shared caches).
 - Equal score inverted or not = probably heterozygous inversion: flag, do not edit.
+- Under `--phasing hic` large scaffolds never mix prefixes within a superscaffold, but a
+  small piece (unloc) may go to the other prefix's copy. `trio`: no mixing at all.
 - Sex chromosomes: PAR is not a haplotig; in allhaps both X/Y (Z/W) go to HAP1.
 - allhaps with two haplotypes: pairs side by side, better one (fewer gaps, more complete,
   telomeres) labelled HAP1; more than two: HAP1, HAP2, then Haplotig/FalseDuplicate.
@@ -88,15 +104,27 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 
 ## Known gaps, in rough priority
 
+0. **allhaps joins beyond one copy's own pieces.** `arrange_pieces` orders and orients the
+   pieces of a copy plus attached pieces of 40 px or more (see the last PROGRESS entry for
+   the Troglobisium scores). Still to do: chains across several scaffolds of one
+   chromosome before pairing (the curator's X is five pieces from two scaffolds), better
+   orientation of 4-9 Mb pieces (sequence alignments will give it directly), two
+   haplotypes joined in one scaffold, and Troglobisium with its FASTA and BUSCO tables
+   (`tools/align_tro.py`; the alignment is slow, over 45 minutes).
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /
    invert_tip / keep with dual-scaffold logic, pairing, parallel layout, HAP tags, sex
    chromosome candidates). Sequence homology is implemented (`homology.py`; `run --fasta` / `--paf`; minimap2 and
    miniprot live in conda env `pretext-autocurate`) and is the better source for pairing.
-   `busco.py` exists but is not yet wired into `run`. Next: BUSCO completeness for the HAP1
-   choice, all-vs-all alignment (same-prefix pairs, false duplications), placing small
-   scaffolds along their homolog. Joins, unlocs, haplotigs
-   and microchromosomes under ~1.3 Mb are not done for allhaps. File mip levels saturate:
-   use `Signal.binned` for anything quantitative at coarse resolution.
+   BUSCO (`--busco-table`, `--busco-lineage`) is wired into `run` and is a tie-breaker for
+   HAP1. Small scaffolds: `--small-paf` / `align_small`, unlocs where sequence and Hi-C
+   agree, same-prefix pairs (see the last PROGRESS entry). Next: position of a piece along
+   its homolog (filling a hole in one copy, as the curator did with H1_scaffold_44 and
+   H2_scaffold_39), joins, Haplotig/FalseDuplicate tags for third copies, the three kept
+   telomere sites the curator cut (H1_scaffold_5, H2_scaffold_4, H2_scaffold_36).
+   Decided by the curator (2026-11-13): a small piece may go to the other prefix's copy
+   under `--phasing hic` (never under `trio`); `place_small` chooses the copy.
+   File mip levels saturate: use `Signal.binned` for anything quantitative at coarse
+   resolution.
 2. Chromosome 2 of xgTylRafi is two groups (a join flagged because of an interstitial
    telomere signal and a tie). Grouping pieces of one chromosome whose ends do not touch.
 3. Small local rearrangements with weak orientation signal; nested inversions (iterate).
