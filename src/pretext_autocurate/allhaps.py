@@ -700,6 +700,46 @@ def _homolog_dir(sg, a, b, cols, max_rows=120, k=6):
     return d
 
 
+def _block_index(blocks):
+    """{scaffold name: [(start, end, other name, other start, other end, same strand)]} with
+    every alignment entered from both of its sides."""
+    idx = {}
+    for bk in blocks:
+        if bk.mapq < 30:
+            continue
+        idx.setdefault(bk.q, []).append((bk.qs, bk.qe, bk.t, bk.ts, bk.te, bk.same_strand))
+        idx.setdefault(bk.t, []).append((bk.ts, bk.te, bk.q, bk.qs, bk.qe, bk.same_strand))
+    return idx
+
+
+def _aligned_dir(raw, idx, piece, cols, min_bp=100000, min_frac=0.1, clear=0.7):
+    """Direction of a piece relative to the other copy from sequence alignments: +1 if at
+    least 70% of its bases aligned to the pixel ranges `cols` are on the same strand, -1 if
+    at most 30%, 0 if too little aligns or the strands are mixed."""
+    bpp = raw.bp_per_pix
+    name = raw.names[raw.orig_scaffold[piece[0]]]
+    lo, hi = raw.rel_coord[piece[0]] * bpp, (raw.rel_coord[piece[1]] + 1) * bpp
+    targets = {}
+    for a, b in cols:
+        targets.setdefault(raw.names[raw.orig_scaffold[a]], []).append((raw.rel_coord[a] * bpp, (raw.rel_coord[b] + 1) * bpp))
+    tot = same = 0.0
+    for s0, e0, other, os_, oe_, st in idx.get(name, []):
+        ov = min(e0, hi) - max(s0, lo)
+        if ov <= 0 or other not in targets:
+            continue
+        # the part of the other side that corresponds to the overlap (alignments are long)
+        f0, f1 = (max(s0, lo) - s0) / (e0 - s0), (min(e0, hi) - s0) / (e0 - s0)
+        if not st:
+            f0, f1 = 1 - f1, 1 - f0
+        o0, o1 = os_ + f0 * (oe_ - os_), os_ + f1 * (oe_ - os_)
+        if any(min(o1, t1) - max(o0, t0) > 0 for t0, t1 in targets[other]):
+            tot += ov
+            same += ov if st else 0.0
+    if tot < max(min_bp, min_frac * (hi - lo)):
+        return 0
+    return 1 if same >= clear * tot else -1 if same <= (1 - clear) * tot else 0
+
+
 def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
     """Order and orientation of the pieces of one chromosome copy that give the most contact
     between neighbouring ends (exact search over all orders and orientations).
@@ -717,7 +757,7 @@ def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
                         adj[(i, ri, j, rj)] = _adjacency(sg, g, pieces[i], ri, pieces[j], rj)
     total = lambda arr: sum(adj[(a, ra, b, rb)] for (a, ra), (b, rb) in zip(arr, arr[1:]))
     if n > max_n or n < 2:
-        return list(init), total(init), total(init), adj, []
+        return list(init), total(init), total(init), adj, [], []
     best = {}                                   # (mask, last, reversed) -> (score, previous state)
     for i in range(n):
         for r in (False, True):
@@ -754,7 +794,7 @@ def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
     # way as that of the nearest piece whose orientation is clear. Without a guide it keeps
     # the orientation it had.
     r_of = dict(arr)
-    flip_cost = {}
+    flip_cost, guided = {}, []
     for k_, (i, r) in enumerate(arr):
         alt = arr[:k_] + [(i, not r)] + arr[k_ + 1:]
         flip_cost[i] = total(arr) - total(alt)
@@ -768,12 +808,13 @@ def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
         if di and dj:
             r_of[i] = r_of[ref] ^ (di != dj)
             unclear.remove(i)                   # settled by the homolog
+            guided.append(i)
         else:
             r_of[i] = dict(init)[i]
     arr = [(i, r_of[i]) for i in order_]
     if dict(arr)[big] != dict(init)[big]:
         arr = [(i, not r) for i, r in reversed(arr)]
-    return arr, total(arr), total(init), adj, unclear
+    return arr, total(arr), total(init), adj, unclear, guided
 
 
 def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
@@ -818,6 +859,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         if p.kind == "extra" and p.a in mate_of:
             extra_of.setdefault(mate_of[p.a], []).append(p.b)
     arranged, joined, arr_rows = {}, {}, []
+    block_idx = _block_index(blocks) if blocks is not None else None
     span = lambda a, b: (f"{raw.names[raw.orig_scaffold[a]]} {raw.rel_coord[a] * raw.bp_per_pix / 1e6:.1f}-"
                          f"{(raw.rel_coord[b] + 1) * raw.bp_per_pix / 1e6:.1f} Mb")
     for u in (sorted(mate_of, key=lambda u: start_[u]) if do_arrange else []):
@@ -840,10 +882,16 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         memo = {}
 
         def guide(i, pieces=pieces, cols=cols, memo=memo):
+            """Direction of piece i in the other copy: from the alignments if there are any
+            (and they are clear), else from the Hi-C homology line."""
             if i not in memo:
-                memo[i] = _homolog_dir(_signal(raw), pieces[i][0], pieces[i][1], cols)
+                d = _aligned_dir(raw, block_idx, pieces[i], cols) if block_idx is not None else 0
+                if d:
+                    by_seq.add(i)
+                memo[i] = d or _homolog_dir(_signal(raw), pieces[i][0], pieces[i][1], cols)
             return memo[i]
-        arr, best, was, adj, unclear = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
+        by_seq = set()
+        arr, best, was, adj, unclear, guided = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
                                                       guide=guide)
         if arr == init or best - was < gain_min:
             continue
@@ -857,6 +905,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             evidence="new order: " + ", ".join(span(pieces[i][0], pieces[i][1]) + (" reversed" if r else "") for i, r in arr)
                      + "; contact between neighbouring ends " + "/".join(f"{x:.2f}" for x in links)
                      + f" (sum {best:.2f}) against {was:.2f} as assembled"
+                     + ("; oriented by the other haplotype ("
+                        + ("sequence alignment" if any(i in by_seq for i in guided) else "Hi-C homology line") + "): "
+                        + ", ".join(span(*pieces[i]) for i in guided) if guided else "")
                      + ("; orientation too close to call, left as it was, for: "
                         + ", ".join(span(*pieces[i]) for i in unclear) if unclear else "")))
     for c in small_calls:

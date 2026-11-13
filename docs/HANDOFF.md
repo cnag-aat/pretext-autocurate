@@ -46,7 +46,8 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   curator's 30 edits on top of an earlier tool output; `.savestate_4_curator_reviewed_tags`
   = the same plus reviewed Haplotig/Unloc tags. **The last is the reference for scoring.**
   Its paint ids split one chromosome (scaffold_3) into two ids; ignore that.
-- bAegFun (bird, allhaps H1_/H2_, MQ0 + MQ10, 65536 px) with curator `.savestate_6`.
+- bAegFun (boreal owl, *Aegolius funereus*; allhaps H1_/H2_, MQ0 + MQ10, 65536 px) with
+  curator `.savestate_6`. "The bird" in the notes is this genome.
 - qqTroRaco (Troglobisium racovitzai, a pseudoscorpion; allhaps, MQ0 only) with curator
   `.savestate_final`. Added 2026-11-13 as the harder allhaps test.
 - CAE71 savestates only; the CAE71 maps are not in the repo.
@@ -107,8 +108,8 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 0. **allhaps joins beyond one copy's own pieces.** `arrange_pieces` orders and orients the
    pieces of a copy plus attached pieces of 40 px or more (see the last PROGRESS entry for
    the Troglobisium scores). Still to do: chains across several scaffolds of one
-   chromosome before pairing (the curator's X is five pieces from two scaffolds), better
-   orientation of 4-9 Mb pieces (sequence alignments will give it directly), two
+   chromosome before pairing (the curator's X is five pieces from two scaffolds), orientation of
+   4-9 Mb pieces without sequence (with `--paf` the alignment blocks now decide ties), two
    haplotypes joined in one scaffold, and Troglobisium with its FASTA and BUSCO tables
    (`tools/align_tro.py`; the alignment is slow, over 45 minutes).
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /

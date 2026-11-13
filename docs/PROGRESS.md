@@ -935,3 +935,27 @@ To do with sequence (the alignment is there and good; it is barely used yet)
 3. Find out why the layout score with `--paf` is slightly below the map-only score.
 4. Small-against-all alignment for Troglobisium (not run; the 4.4 Gb index needs more than
    this machine's 24 GB in one piece).
+
+## 2026-11-13: alignment blocks as the orientation guide
+
+Committed the work so far as da2a901 on branch `allhaps-cuts-joins-level`. The bird
+(bAegFun) is the boreal owl, *Aegolius funereus* (curator).
+
+- `_block_index`, `_aligned_dir`: direction of a piece relative to the other copy from the
+  alignment blocks (mapq >= 30) that fall in the other copy's ranges: +1 / -1 when at
+  least 70% of the aligned bases agree, and at least 100 kb or 10% of the piece aligns.
+  Long blocks are clipped to the piece in proportion.
+- In `arrange_pieces` the guide for orientation ties is now the alignment when `--paf` /
+  `--fasta` is given, and the Hi-C homology line otherwise. End contact still decides
+  when it is clear. The `rearrange` row names the pieces oriented this way and the source.
+- Troglobisium with `--paf` at the default level: 11 of 15 tool junctions are in the
+  curation (9 before the guide; 10 from the map alone), 17 curator junctions reproduced.
+  Oriented by sequence: H2_scaffold_67, H2_scaffold_71, H2_scaffold_68, H2_scaffold_61,
+  H2_scaffold_6 31.5-37.8 Mb.
+- Still not in the curation: H2_scaffold_69 joined to H2_scaffold_8 (the curator has
+  H2_scaffold_59, _77, _88, _81, _69 and the 3.5 Mb end of H2_scaffold_8 in a different
+  order), H2_scaffold_6 0-8 Mb, the 6 Mb piece of H2_scaffold_44, and H2_scaffold_6
+  26-31 Mb next to 38-57 Mb: the tool keeps these in one chromosome (end contact 1.13),
+  the curator painted 26-38 Mb and 38-57 Mb as two units.
+- Not done: alignments for the order of pieces, for cut decisions, and for chains across
+  scaffolds of one chromosome.

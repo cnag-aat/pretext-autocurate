@@ -195,6 +195,30 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
         rows, _, _ = curate_allhaps(self.pt, phasing="hic", do_arrange=False)
         self.assertFalse(any(r["action"] in ("rearrange", "join") for r in rows))
 
+    def test_alignment_guides_orientation(self):
+        """With alignment blocks, a piece's direction in the other copy comes from the sequence."""
+        from pretext_autocurate.allhaps import _aligned_dir, _block_index
+        from pretext_autocurate.homology import Block
+        pt, bpp = self.pt, self.pt.bp_per_pix
+        ix = {n: i for i, n in enumerate(pt.names)}
+        rng = lambda n: (int(pt.scaffold_start[ix[n]]), int(pt.scaffold_start[ix[n]] + pt.scaffold_npix[ix[n]] - 1))
+        a, b = rng("H2_scaffold_67"), rng("H1_scaffold_61")
+        L = int((a[1] - a[0] + 1) * bpp)
+        fwd = _block_index([Block("H2_scaffold_67", 0, L, "H1_scaffold_61", 1000000, 1000000 + L, True, L, 60)])
+        rev = _block_index([Block("H2_scaffold_67", 0, L, "H1_scaffold_61", 1000000, 1000000 + L, False, L, 60)])
+        self.assertEqual(_aligned_dir(pt, fwd, a, [b]), 1)
+        self.assertEqual(_aligned_dir(pt, rev, a, [b]), -1)
+        self.assertEqual(_aligned_dir(pt, rev, a, [rng("H1_scaffold_7")]), 0)          # aligned, but not to this copy
+        self.assertEqual(_aligned_dir(pt, {}, a, [b]), 0)
+        paf = os.path.join(ROOT, "seed", "fixtures", "qqTroRaco.H2_vs_H1.asm5.paf")
+        if os.path.exists(paf):
+            from pretext_autocurate.homology import read_paf
+            rows, _, _ = curate_allhaps(self.pt, phasing="hic", blocks=read_paf(paf, min_mapq=0))
+            re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
+            self.assertIn("oriented by the other haplotype (sequence alignment): H2_scaffold_67", re["H2_scaffold_67"])
+            # as the curator has it: H2_scaffold_70 forward, then H2_scaffold_67 reversed (here the whole chain is turned)
+            self.assertRegex(re["H2_scaffold_67"], r"new order: H2_scaffold_67 0\.0-9\.1 Mb, H2_scaffold_70 0\.0-4\.4 Mb reversed;")
+
     def _sites(self, rows):
         """(action, pixel) of every break site, and the curator's cut pixels."""
         ix = {n: i for i, n in enumerate(self.pt.names)}
