@@ -1006,3 +1006,10 @@ Result on Troglobisium, map only (sweep in `out_tro_sweep/`, with `compare.txt` 
 
 Not done: alignment positions for the order of pieces (order still comes from end contact
 only), alignments for cut decisions, pieces under 40 px inside chains.
+
+## 2026-11-13: end of session
+
+Committed on branch `allhaps-cuts-joins-level` (da2a901, f1d1a6f, fb99581, and this note).
+20 allhaps tests pass; the single-mode tests were not rerun this session. Curator's notes
+for the next session (coverage for sex chromosomes, FASTGA, hapscotch) are in
+`docs/HANDOFF.md` under "To think about next".

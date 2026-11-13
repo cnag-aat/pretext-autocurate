@@ -103,6 +103,26 @@ Not verified: the AGP format (written from memory of PretextView's style), the C
 attached. Confident haplotig calls: 83 of 84 right; 74 borderline pieces highlighted.
 Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45.
 
+## To think about next (curator, end of session 2026-11-13)
+
+- **Coverage for sex chromosomes.** The coverage track often separates sex chromosomes
+  when they are not homomorphic. The tool uses it in two places only (a pair with both
+  copies at about half coverage; unpaired scaffolds of 5 Mb or more at half coverage).
+  Use it more: for hemizygous chromosomes built from several scaffolds (Troglobisium X is
+  five pieces from two scaffolds and cannot be chained by two-haplotype evidence), for
+  the boundary between a sex chromosome and an autosome joined in one scaffold
+  (H1_scaffold_1, H2_scaffold_4), and to label X/Y or Z/W.
+- **FASTGA** (https://github.com/thegenemyers/FASTGA) for the pairwise alignment between
+  haplotypes: benchmark against minimap2 asm5. On Troglobisium minimap2 took 94 minutes
+  and 10 GB for H2 against H1, and the small-against-all alignment does not fit in this
+  machine's memory. Compare run time, memory, aligned fraction and what the tool does
+  with each alignment (pairs, orientation guide).
+- **hapscotch** by Chenxi Zhou (https://github.com/c-zhou/hapscotch), who uses FASTGA:
+  possibly related to what this tool attempts. It starts from contigs, not scaffolds, but
+  some ideas look similar. Read the code and compare approaches (homology between
+  haplotypes as scaffolding evidence, how joins and switches are decided) before building
+  more of the alignment-based steps here. Neither repository has been looked at yet.
+
 ## Known gaps, in rough priority
 
 0. **allhaps chains.** `merge_pairs` joins homolog pairs that are parts of one chromosome,
