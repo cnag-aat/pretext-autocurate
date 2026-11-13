@@ -959,3 +959,50 @@ Committed the work so far as da2a901 on branch `allhaps-cuts-joins-level`. The b
   the curator painted 26-38 Mb and 38-57 Mb as two units.
 - Not done: alignments for the order of pieces, for cut decisions, and for chains across
   scaffolds of one chromosome.
+
+## 2026-11-13: pairs of one chromosome merged (chains across scaffolds)
+
+Why: after a correct cut (H1_scaffold_2 at 18.2 Mb) the two halves pair separately (with
+H2_scaffold_59 and H2_scaffold_8) and were laid out as two chromosomes. The curator has
+one. The same happens whenever a chromosome is in two scaffolds in both haplotypes.
+
+Done
+- `allhaps.merge_pairs`: for every two homolog pairs, the contact between an end of one
+  copy and an end of the other, and the same for the corresponding ends of their two
+  homologs (taken from each pair's strand); the score is the weaker of the two, best of
+  the four end combinations. Computed on the map binned by 8 px (in memory, fast).
+  A merge needs: score >= 0.5 (0.7 / 0.5 / 0.3 by level); no end with a telomere signal;
+  score >= 3x (4 / 3 / 2) what either pair shows with its third-best partner; 1.2x any
+  rival for the same end; each end used once.
+- In `curate_allhaps` the smaller pair's units join the chains of the larger pair's copies
+  (same prefix on each side), with their attached pieces; `arrange_pieces` then orders and
+  orients everything (always applied for a merged chromosome). Row `merge`.
+- At most 9 pieces per search: the smallest attached pieces are left as unlocs beyond that.
+
+What separates real merges from clustering (measured, both genomes)
+- Troglobisium, real: 0.92, 0.59, 0.58, 0.50; best false one 0.42. Third-best partner of
+  the pairs involved: 0.03-0.13.
+- Boreal owl microchromosomes (all false, MQ10 map): 0.96-2.60, but every one has a
+  telomeric end, and the third-best partner is at 0.8-1.65: they touch many others alike.
+- End specificity (best end combination against the second) points the wrong way: real
+  merges of 9 Mb pieces have 0.59 against 0.54, the false telomere-to-telomere one 0.42
+  against 0.03. Not used.
+
+Result on Troglobisium, map only (sweep in `out_tro_sweep/`, with `compare.txt` per level)
+| level | merges | tool junctions in the curation | curator junctions reproduced | curator chromosomes >= 90% in one tool group |
+|---|---|---|---|---|
+| 0 | 1 | 6 of 9 | 15 | 107 of 128 |
+| 0.5 | 3 | 12 of 21 | 18 | 109 of 128 |
+| 1 | 5 | 15 of 38 | 21 | 109 of 128 |
+- The three merges at the default are one chromosome each in the curation: H1_scaffold_2
+  halves with H2_scaffold_59 + H2_scaffold_8; H1_scaffold_10 halves with H2_scaffold_27 +
+  H2_scaffold_62; H2_scaffold_60/H1_scaffold_63 with H2_scaffold_64/H1_scaffold_66.
+- The strict junction score undercounts them: the curator has small scaffolds between the
+  merged pieces (H2_scaffold_77, _88, _81, _69 between H2_scaffold_59 and H2_scaffold_8),
+  and in the third case the curator's copies mix prefixes (H2_scaffold_64 with
+  H1_scaffold_63) where the tool keeps one prefix per copy.
+- With `--paf`: same three merges, 13 of 21 and 18.
+- Boreal owl: no merge; output as before.
+
+Not done: alignment positions for the order of pieces (order still comes from end contact
+only), alignments for cut decisions, pieces under 40 px inside chains.

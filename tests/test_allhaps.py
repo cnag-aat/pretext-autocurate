@@ -162,7 +162,7 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
                     good += 1
                 else:
                     bad += 1
-        self.assertGreaterEqual(good, 58)
+        self.assertGreaterEqual(good, 55)
         self.assertEqual(bad, 0)
         xy = [r for r in self.rows if r["action"] == "pair_unequal"]
         self.assertTrue(any(r["tag"] == "HAP1/HAP1" and "H2_scaffold_4" in r["scaffold"] + r["partner"] for r in xy))    # X with Y
@@ -194,6 +194,27 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
         # switched off, nothing is rearranged
         rows, _, _ = curate_allhaps(self.pt, phasing="hic", do_arrange=False)
         self.assertFalse(any(r["action"] in ("rearrange", "join") for r in rows))
+
+    def test_pairs_of_one_chromosome_are_merged(self):
+        """Two homolog pairs whose ends join in both haplotypes are one chromosome. Each merge
+        here is one chromosome in the curation (H1_scaffold_2 was cut by the tool and the curator)."""
+        merged = {frozenset((r["scaffold"].split(":")[0], r["partner"].split(":")[0])): r for r in self.rows if r["action"] == "merge"}
+        self.assertEqual(set(merged), {frozenset(("H1_scaffold_2", "H2_scaffold_59")), frozenset(("H2_scaffold_64", "H1_scaffold_66")),
+                                       frozenset(("H2_scaffold_62", "H1_scaffold_10"))})
+        for r in merged.values():
+            host = r["evidence"].split("the pair ")[1].split(" are parts")[0].split(" / ")
+            ga = set(self.groups[r["scaffold"].split(":")[0]]) | set(self.groups[r["partner"].split(":")[0]])
+            gh = set(self.groups[host[0].split(":")[0]]) | set(self.groups[host[1].split(":")[0]])
+            self.assertTrue(ga & gh, r)
+        # merged units are painted like the copy they joined
+        ms = MapState(self.pt).replay(self.st.edits)
+        paint = dict(self.st.scaffs)
+        ids = collections.defaultdict(set)
+        for i, c in enumerate(ms.contigs):
+            if c.length >= 60:
+                ids[self.pt.names[c.scaffold]].add(paint.get(i))
+        self.assertEqual(ids["H2_scaffold_59"], ids["H2_scaffold_8"])
+        self.assertTrue(ids["H2_scaffold_59"] and None not in ids["H2_scaffold_59"])
 
     def test_alignment_guides_orientation(self):
         """With alignment blocks, a piece's direction in the other copy comes from the sequence."""

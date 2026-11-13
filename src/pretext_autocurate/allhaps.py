@@ -817,6 +817,102 @@ def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
     return arr, total(arr), total(init), adj, unclear, guided
 
 
+def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, specific=3.0, debug=None):
+    """Homolog pairs that are parts of one chromosome: an end of one pair's copy touches an
+    end of the other pair's copy at the level of adjacent sequence, and the corresponding
+    ends of their two homologs do the same (the join is seen in both haplotypes, which
+    telomere clustering or repeats shared between chromosomes do not produce). No end may carry
+    a telomere signal, and the contact must be `specific` times what either pair shows with its
+    third-best partner (a piece of a chromosome has at most two neighbours). Works on the
+    map binned by f pixels. Returns [(score, host pair, member pair, x, y)]: the member's
+    unit y joins the host's unit x; each pair end is used once."""
+    M = sg.binned(f)
+    nb = M.shape[0]
+    raw = getattr(pt, "pt", pt)
+    scb = raw.orig_scaffold[np.minimum(np.arange(nb) * f + f // 2, raw.npix - 1)]
+    D = 40
+    g = np.array([np.diagonal(M, d)[scb[:nb - d] == scb[d:]].mean() for d in range(D)])
+    start, npx = pt.scaffold_start, pt.scaffold_npix
+
+    def win(u, tail):
+        a, b = -(-int(start[u]) // f), int(start[u] + npx[u]) // f - 1
+        n = b - a + 1
+        K = 1 if n >= 6 else 0
+        W = max(1, min(12, n // 2 - K))
+        return (b - K - W + 1, b - K, K, True) if tail else (a + K, a + K + W - 1, K, False)
+
+    def adj(x, ex, y, ey):
+        a0, a1, k1, t1 = win(x, ex == "t")
+        b0, b1, k2, t2 = win(y, ey == "t")
+        i, j = np.arange(a1 - a0 + 1), np.arange(b1 - b0 + 1)
+        i, j = (i[::-1] if t1 else i), (j[::-1] if t2 else j)
+        expect = g[np.minimum(i[:, None] + j[None, :] + 1 + k1 + k2, D - 1)]
+        return float(M[a0:a1 + 1, b0:b1 + 1].sum() / max(expect.sum(), 1e-9))
+
+    other = {"h": "t", "t": "h"}
+    main = [p for p in pairs if p.kind == "pair" and min(npx[p.a], npx[p.b]) >= min_px and hap[p.a] != hap[p.b]]
+    tel, telomeric = pt.graphs.get("telomere"), set()
+    if tel is not None:
+        thr = max(50.0, 5 * float(np.percentile(tel, 99)))
+        for P in main:
+            for u in (P.a, P.b):
+                a0, n = int(start[u]), int(npx[u])
+                if tel[a0:a0 + 10].max() >= thr:
+                    telomeric.add((u, "h"))
+                if tel[a0 + n - 10:a0 + n].max() >= thr:
+                    telomeric.add((u, "t"))
+    allc = []
+    for i, P in enumerate(main):
+        for Q in main[i + 1:]:
+            a, b = P.a, P.b
+            c, d = (Q.a, Q.b) if hap[Q.a] == hap[a] else (Q.b, Q.a)
+            combos = []
+            for ea in "ht":
+                for ec in "ht":
+                    eb = ea if P.same_strand else other[ea]
+                    ed = ec if Q.same_strand else other[ec]
+                    v = min(adj(a, ea, c, ec), adj(b, eb, d, ed))
+                    combos.append((v, ea, ec, bool({(a, ea), (c, ec), (b, eb), (d, ed)} & telomeric)))
+            combos.sort(key=lambda x: -x[0])
+            allc.append((combos[0][0], id(P), combos[0][1], id(Q), combos[0][2], P, Q, a, c, combos[0][3], combos[1][0]))
+    # what each pair shows with its third-best partner: a piece of a chromosome has at most two
+    # neighbours, so anything beyond the second is the level of unspecific contact for that pair
+    by_pair = {}
+    for x in allc:
+        by_pair.setdefault(x[1], []).append(x[0])
+        by_pair.setdefault(x[3], []).append(x[0])
+    third = {k: (sorted(v, reverse=True)[2] if len(v) > 2 else 0.0) for k, v in by_pair.items()}
+    if debug is not None:
+        debug.extend((x[0], x[10], third[x[1]], third[x[3]], x[9], pt.names[x[7]], pt.names[x[8]]) for x in allc)
+    cand = []
+    for x in allc:
+        v, ip, ea, iq, ec, P, Q, a, c, at_tel, second = x
+        # Adjacent ends: no telomere signal, and far more contact than the pairs show with
+        # partners they cannot be next to. Small chromosomes that cluster in the nucleus (bird
+        # microchromosomes) touch many others at a similar level.
+        if at_tel or v < specific * max(third[ip], third[iq]):
+            continue
+        cand.append((v, ip, ea, iq, ec, P, Q, a, c))
+    cand.sort(key=lambda x: -x[0])
+    used, group, out = set(), {}, []
+    for k, (v, ip, ea, iq, ec, P, Q, a, c) in enumerate(cand):
+        if v < link_min:
+            break
+        if (ip, ea) in used or (iq, ec) in used or group.get(ip, ip) == group.get(iq, iq):
+            continue
+        rival = max([w for w, jp, fa, jq, fc, *_ in cand[k + 1:] if (jp, fa) in ((ip, ea), (iq, ec)) or (jq, fc) in ((ip, ea), (iq, ec))]
+                    + [0.0])
+        if rival * margin > v:
+            continue
+        used.update(((ip, ea), (iq, ec)))
+        ga, gb = group.get(ip, ip), group.get(iq, iq)
+        for key in [x for x, gid in group.items() if gid == gb] + [iq]:
+            group[key] = ga
+        group[ip] = ga
+        out.append((v, P, Q, a, c))
+    return out
+
+
 def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
                    small_blocks=None, do_place=True, level=0.5, do_arrange=True):
     """allhaps curation so far: cuts at gaps with reduced contact and at sharp breaks, homolog
@@ -860,24 +956,67 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             extra_of.setdefault(mate_of[p.a], []).append(p.b)
     arranged, joined, arr_rows = {}, {}, []
     block_idx = _block_index(blocks) if blocks is not None else None
+    # Pairs that are parts of one chromosome become one: the smaller pair's two units go into
+    # the chains of the larger pair's two copies (same haplotype prefix on each side).
+    host_of = {}
+    if do_arrange:
+        size = lambda P: npx_[P.a] + npx_[P.b]
+        root = {}
+        find = lambda P: find(root[id(P)]) if id(P) in root else P
+        for v, P, Q, x, y in merge_pairs(pt, sg_arr, pairs, hap, link_min=lv.at(0.7, 0.5, 0.3),
+                                         specific=lv.at(4.0, 3.0, 2.0)):
+            P, Q = find(P), find(Q)
+            if P is Q:
+                continue
+            if size(Q) > size(P):
+                P, Q = Q, P
+            root[id(Q)] = P
+            Q.kind = "merged"
+            side = {hap[P.a]: P.a, hap[P.b]: P.b}
+            for u_ in (Q.a, Q.b):
+                host_of[u_] = side[hap[u_]]
+            for old_u, new_u in list(host_of.items()):       # units merged into Q earlier follow it
+                if new_u in (Q.a, Q.b):
+                    host_of[old_u] = side[hap[new_u]]
+            arr_rows.append(dict(
+                action="merge", scaffold=pt.names[Q.a], length_mb=round(npx_[Q.a] * pt.bp_per_pix / 1e6, 2),
+                partner=pt.names[Q.b], strand="", tag="", score=round(v, 2), next_best="",
+                evidence=f"this pair and the pair {pt.names[P.a]} / {pt.names[P.b]} are parts of one chromosome: their ends "
+                         f"touch at {v:.2f} of adjacent sequence in both haplotypes (the weaker of the two); "
+                         "laid out and painted as one chromosome"))
+        for u_, h_ in host_of.items():
+            if attach.get(u_):
+                attach.setdefault(h_, []).extend(attach.pop(u_))
+            if extra_of.get(u_):
+                extra_of.setdefault(h_, []).extend(extra_of.pop(u_))
+    members = {}
+    for u_, h_ in host_of.items():
+        members.setdefault(h_, []).append(u_)
     span = lambda a, b: (f"{raw.names[raw.orig_scaffold[a]]} {raw.rel_coord[a] * raw.bp_per_pix / 1e6:.1f}-"
                          f"{(raw.rel_coord[b] + 1) * raw.bp_per_pix / 1e6:.1f} Mb")
     for u in (sorted(mate_of, key=lambda u: start_[u]) if do_arrange else []):
-        a, b = int(start_[u]), int(start_[u] + npx_[u] - 1)
-        pieces, lo = [], a
-        for q in [q for q in soft if a <= q < b]:
-            pieces.append((lo, q))
-            lo = q + 1
-        pieces.append((lo, b))
-        own = len(pieces)
-        others = [c["u"] for c in attach.get(u, []) if npx_[c["u"]] >= chain_px] + \
-                 [v for v in extra_of.get(u, []) if npx_[v] >= chain_px]
+        if u in host_of:
+            continue
+        units = [u] + sorted(members.get(u, []), key=lambda v: -npx_[v])
+        pieces = []
+        for v in units:
+            a, b = int(start_[v]), int(start_[v] + npx_[v] - 1)
+            lo = a
+            for q in [q for q in soft if a <= q < b]:
+                if q - lo >= 4 and b - q > 4:              # no pieces of a few pixels
+                    pieces.append((lo, q))
+                    lo = q + 1
+            pieces.append((lo, b))
+        others = sorted([c["u"] for c in attach.get(u, []) if npx_[c["u"]] >= chain_px] +
+                        [v for v in extra_of.get(u, []) if npx_[v] >= chain_px], key=lambda v: -npx_[v])
+        others = others[:max(0, 9 - len(pieces))]              # the search is exact, so at most 9 pieces
         pieces += [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in others]
-        if len(pieces) < 2 or len(pieces) > 9 or min(q - p_ for p_, q in pieces) < 4:
+        forced = len(units) > 1                                # a merged chromosome is laid out as one in any case
+        if len(pieces) < 2:
             continue
         init = [(i, pieces[i] in tips) for i in range(len(pieces))]
-        m_ = mate_of[u]
-        cols = [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in
+        mates = [mate_of[v] for v in units]
+        cols = [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for m_ in mates for v in
                 [m_] + [c["u"] for c in attach.get(m_, [])] + extra_of.get(m_, [])]
         memo = {}
 
@@ -893,10 +1032,10 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         by_seq = set()
         arr, best, was, adj, unclear, guided = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
                                                       guide=guide)
-        if arr == init or best - was < gain_min:
+        if not forced and (arr == init or best - was < gain_min):
             continue
         arranged[u] = [(pieces[i][0], pieces[i][1], r) for i, r in arr]
-        for v in others:
+        for v in others + units[1:]:
             joined[v] = u
         links = [adj[(x, rx, y, ry)] for (x, rx), (y, ry) in zip(arr, arr[1:])]
         arr_rows.append(dict(
@@ -919,11 +1058,11 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     haps = sorted({h for h in hap if h})
     cov = pt.graphs.get("coverage")
     npx, start = pt.scaffold_npix, pt.scaffold_start
-    main = [p for p in pairs if p.kind != "extra"]
+    main = [p for p in pairs if p.kind not in ("extra", "merged")]
     extra = {}
     for p in pairs:
         if p.kind == "extra":
-            extra.setdefault(p.a, []).append(p)
+            extra.setdefault(host_of.get(p.a, p.a), []).append(p)
     paired = np.concatenate([np.arange(start[s], start[s] + npx[s]) for p in main for s in (p.a, p.b)]) \
         if main else np.array([], dtype=int)
     norm = float(np.median(cov[paired])) if cov is not None and len(paired) else 0.0

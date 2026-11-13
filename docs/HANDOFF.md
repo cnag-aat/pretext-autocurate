@@ -105,13 +105,13 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 
 ## Known gaps, in rough priority
 
-0. **allhaps joins beyond one copy's own pieces.** `arrange_pieces` orders and orients the
-   pieces of a copy plus attached pieces of 40 px or more (see the last PROGRESS entry for
-   the Troglobisium scores). Still to do: chains across several scaffolds of one
-   chromosome before pairing (the curator's X is five pieces from two scaffolds), orientation of
-   4-9 Mb pieces without sequence (with `--paf` the alignment blocks now decide ties), two
-   haplotypes joined in one scaffold, and Troglobisium with its FASTA and BUSCO tables
-   (`tools/align_tro.py`; the alignment is slow, over 45 minutes).
+0. **allhaps chains.** `merge_pairs` joins homolog pairs that are parts of one chromosome,
+   `arrange_pieces` orders and orients the pieces of each copy (end contact; the other
+   haplotype, by alignment or Hi-C line, breaks orientation ties). See the last PROGRESS
+   entries for scores. Still to do: alignment positions for piece order, alignments for
+   cut decisions, small pieces (under 40 px) inside chains, hemizygous chromosomes built
+   from several scaffolds (the curator's X: five pieces from two scaffolds; no homolog, so
+   no dual evidence), two haplotypes joined in one scaffold.
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /
    invert_tip / keep with dual-scaffold logic, pairing, parallel layout, HAP tags, sex
    chromosome candidates). Sequence homology is implemented (`homology.py`; `run --fasta` / `--paf`; minimap2 and
