@@ -1297,3 +1297,10 @@ minimap2 for the haplotype alignments.
     of scaffold_2 needed inverting). Its telomere faces the gap as H1_scaffold_2's does,
     and the alignment says both are colinear as assembled. To ask the curator.
   - HAP1 choice changed for a few pairs (telomeric ends now from telo_scan).
+- Troglobisium with telo_scan.py, motif TTAGG (`out_tro_telo/`, map + PAF, 2 min 8 s):
+  the arachnid motif is clearly there (forward strand skews to scaffold ends 33,536 to
+  92; 73 5p and 101 3p windows at score 100 or more), unlike the map's own telomere track.
+  Four flagged sites become cuts from the strands: H1_scaffold_1 12.4 Mb, H1_scaffold_10
+  37.8 Mb, H2_scaffold_4 45.4 Mb, H2_scaffold_6 37.75 Mb, all places the curator broke;
+  H2_scaffold_17 0.47 Mb becomes a tip inversion (not a curator site). Against the final
+  curation: 21 of 29 new junctions (was 22 of 32), 27 reproduced (unchanged).
