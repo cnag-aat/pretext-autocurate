@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 (2026-11-14)
+
+- License: PolyForm Noncommercial License 1.0.0 (`LICENSE.md`). Free for noncommercial use,
+  including by educational institutions and public research organizations; commercial use
+  requires a license from CNAG (`NOTICE`).
+- Repository moved to https://github.com/cnag-aat/pretext-autocurate.
+- No change to the code or its results.
+
 ## 1.0.0 (2026-11-14)
 
 First release for testing by curators ("pre-curation").
