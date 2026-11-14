@@ -5,16 +5,17 @@ from .mapstate import MapState
 
 
 class Piece(NamedTuple):
+    """One contig of the edited map, placed in an output scaffold (a row of the TSV)."""
     index: int          # contig index along the map (what savestate paint/tags refer to)
     out_scaffold: int   # 1-based output scaffold number
     painted_id: int     # PretextView scaffold id, 0 if unpainted
     name: str           # original scaffold name
     start_bp: int       # 1-based, inclusive, in the original scaffold
-    end_bp: int
+    end_bp: int         # inclusive
     strand: str
     start_px: int       # position in the edited map
     length_px: int
-    tags: tuple
+    tags: tuple         # PretextView tag names set on this contig
 
 
 def build_layout(pt, state=None, ms=None):
@@ -38,9 +39,11 @@ def build_layout(pt, state=None, ms=None):
         pid = paint.get(i, 0)
         if not pid or pid != prev_paint:
             out_id += 1
-        prev_paint = pid or None
+        prev_paint = pid or None        # None, so two unpainted neighbours never merge
         last_px = pt.scaffold_npix[c.scaffold] - 1
         ln = int(lens[c.scaffold])
+        # pixel p covers bp [p*bpp, (p+1)*bpp); a piece reaching the scaffold's last pixel
+        # ends at its full length (pixel rounding would otherwise drop or overshoot the tail)
         s = min(int(round(c.lo * bpp)), ln - 1) + 1
         e = ln if c.hi >= last_px else max(min(int(round((c.hi + 1) * bpp)), ln), s)
         tags = tuple(state.tag_names(flags.get(i, 0))) if state else ()
@@ -63,7 +66,7 @@ def write_agp(pieces, path, gap=100, prefix="Scaffold_"):
         for p in pieces:
             if p.out_scaffold != cur:
                 cur, pos, part = p.out_scaffold, 0, 0
-            elif gap:
+            elif gap:                   # U gap of `gap` bp between components of one scaffold
                 part += 1
                 f.write(f"{prefix}{cur}\t{pos + 1}\t{pos + gap}\t{part}\tU\t{gap}\tscaffold\tyes\tproximity_ligation\n")
                 pos += gap
@@ -76,6 +79,7 @@ def write_agp(pieces, path, gap=100, prefix="Scaffold_"):
 
 
 def write_tsv(pieces, path):
+    """One row per Piece; tags comma-separated in the last column."""
     cols = ["contig_index", "out_scaffold", "painted_id", "scaffold", "start_bp", "end_bp",
             "strand", "map_start_px", "length_px", "tags"]
     with open(path, "w") as f:

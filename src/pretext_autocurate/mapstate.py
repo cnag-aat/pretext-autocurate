@@ -22,16 +22,25 @@ class Contig(NamedTuple):
 
     @property
     def hi(self):
+        """Highest scaffold coordinate covered (pixels)."""
         return self.start_coord if self.inverted else self.start_coord + self.length - 1
 
 
 class MapState:
+    """Per-pixel state of the map after replaying edits, plus PretextView's contig list.
+
+    Edits are applied with the same pixel semantics as PretextView, so contig indices
+    (used for painted scaffolds and tags in a savestate) come out the same.
+    """
+
     def __init__(self, pt):
+        """Unedited state of a `Pretext` (or `SegmentedMap`): identity pixel order."""
         self.n = pt.npix
         self.n_orig = pt.n_scaffolds
         self.pix = np.arange(self.n, dtype=np.int64)     # original pixel at each position
+        # scaffold id per position; breaks add multiples of n_orig to make it a new "id"
         self.orig = pt.orig_scaffold.astype(np.int64).copy()
-        self.rel = pt.rel_coord.astype(np.int64).copy()
+        self.rel = pt.rel_coord.astype(np.int64).copy()  # scaffold coordinate (pixels)
         self.update_contigs()
 
     def update_contigs(self):
@@ -44,23 +53,26 @@ class MapState:
         step = np.diff(r)
         ok = (o[1:] == o[:-1]) & (np.abs(step) == 1)       # index j describes pixel j + 1
         change = np.zeros(n - 1, dtype=bool)
-        change[1:] = step[1:] != step[:-1]
+        change[1:] = step[1:] != step[:-1]                  # direction flips (+1 <-> -1)
         starts = [0]
         for j in np.nonzero(~ok | change)[0]:
             i = int(j) + 1
+            # a direction flip right after a contig start is that contig's own first step,
+            # not a new contig (a 1-pixel contig has no direction yet)
             if not ok[j] or starts[-1] != i - 1:
                 starts.append(i)
         starts = np.array(starts)
         lengths = np.diff(np.append(starts, n))
         contigs, inv = [], False
         for s, ln in zip(starts.tolist(), lengths.tolist()):
-            if s < n - 1:
+            if s < n - 1:       # a 1-pixel contig inherits `inv` from the previous one
                 inv = bool(r[s + 1] < r[s])
             contigs.append(Contig(s, ln, int(o[s] % self.n_orig), int(r[s]), inv, int(o[s])))
         self.contigs = contigs
         self.cid = np.repeat(np.arange(len(starts)), lengths)
 
     def _rearrange(self, a, b, delta):
+        """Move positions [a, b] by delta pixels; the pixels they jump over shift back."""
         n = self.n
         if not (0 <= a + delta and b + delta < n):
             raise ValueError(f"move of [{a},{b}] by {delta} leaves the map")
@@ -73,18 +85,27 @@ class MapState:
             arr[a + delta:b + delta + 1] = seg
 
     def _invert(self, a, b):
+        """Reverse positions [a, b] in place."""
         for arr in (self.pix, self.orig, self.rel):
             arr[a:b + 1] = arr[a:b + 1][::-1].copy()
 
     def _break(self, loc):
+        """Break the contig after position `loc`; False (no-op) if that leaves no piece.
+
+        Needs an up-to-date contig list. The right part gets a new scaffold id (+n_orig),
+        so the contig test sees an id change there.
+        """
         c = self.contigs[self.cid[loc]]
         end = c.start + c.length - 1
+        # like PretextView: refuse when the left piece would be a single pixel or the
+        # right piece empty
         if loc - c.start + 1 <= 1 or end - loc <= 0:
             return False
         self.orig[loc + 1:end + 1] += self.n_orig
         return True
 
     def apply(self, edit, update=True):
+        """Apply one Edit; `update=False` defers the contig refresh (see `replay`)."""
         x, y, d, inv = edit
         if d == BREAK_DELTA:
             if self._break(x):
@@ -93,7 +114,7 @@ class MapState:
         a, b = min(x, y), max(x, y)
         if d:
             self._rearrange(a, b, d)
-        if inv:
+        if inv:                             # the inversion applies to the moved range
             self._invert(a + d, b + d)
         if update:
             self.update_contigs()
@@ -141,10 +162,11 @@ def plan_edits(target, current=None):
         rev = int(np.argmax(d != -1)) + 1 if (d != -1).any() else len(q)
         inv = rev > fwd
         ln = rev if inv else fwd
-        a = int(q[0]) - ln + 1 if inv else int(q[0])
+        a = int(q[0]) - ln + 1 if inv else int(q[0])   # current block is [a, b]
         b = a + ln - 1
-        delta = p - a
+        delta = p - a           # <= 0: positions before p are final, so the block lies right
         edits.append(Edit(a, b, delta, inv))
+        # mirror the edit on `cur`: [p, a) shifts right by ln, the block lands at p
         seg = cur[a:b + 1].copy()
         cur[p + ln:b + 1] = cur[p:a].copy()
         cur[p:p + ln] = seg[::-1] if inv else seg

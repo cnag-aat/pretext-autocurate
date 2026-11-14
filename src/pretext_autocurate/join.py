@@ -15,6 +15,7 @@ import numpy as np
 
 @dataclass
 class Params:
+    """Join thresholds; sizes in full-resolution pixels, scores as contact / expectation."""
     min_px: int = 150          # only pieces longer than this are joined here
     window: int = 100          # px of each end compared
     skip: int = 10             # outermost px ignored
@@ -22,28 +23,40 @@ class Params:
     margin: float = 0.8        # next best partner must be below this x the score
     tel_factor: float = 5.0    # telomeric end: track above this x its 99th percentile ...
     tel_floor: float = 50.0    # ... and above this value
-    tel_px: int = 10
+    tel_px: int = 10           # px at each end searched for telomere signal
 
 
 @dataclass
 class Join:
+    """A mutual-best end pair, accepted or not (reported either way)."""
     a: int                     # unit index in the (segmented) map
     a_end: str                 # 'h' (first pixel) or 't'
     b: int
     b_end: str
     score: float
-    second: float
+    second: float              # best competing score of either end
     accepted: bool
     reason: str
 
 
 def _window(pt, s, end, W, K):
+    """Terminal window of unit `s` at end 'h'/'t': (first px, last px, reversed).
+
+    Skips K px at the end and takes up to W px (at most half the unit). `reversed` is True
+    for a tail, so index 0 of the window is always the pixel nearest the end.
+    """
     a, L = int(pt.scaffold_start[s]), int(pt.scaffold_npix[s])
     W = max(1, min(W, L // 2 - K))
     return (a + K, a + K + W - 1, False) if end == "h" else (a + L - K - W, a + L - K - 1, True)
 
 
 def end_score(pt, sg, x, y, W, K, g):
+    """Contact between ends x and y ((unit, 'h'|'t')) relative to abutting sequence.
+
+    Sums the block between the two terminal windows and divides by what the decay curve `g`
+    predicts if the ends were joined: pixel i from one end and j from the other are then
+    i + j + 1 + 2K px apart. About 1 for truly adjacent ends.
+    """
     a0, a1, r1 = _window(pt, *x, W, K)
     b0, b1, r2 = _window(pt, *y, W, K)
     B = sg.block(a0, a1, b0, b1).astype(np.float64)
@@ -55,9 +68,11 @@ def end_score(pt, sg, x, y, W, K, g):
 
 
 def telomeric_ends(pt, units, p):
+    """Set of (unit, 'h'|'t') ends whose first/last `tel_px` px carry a telomere peak."""
     tel = pt.graphs.get("telomere")
     if tel is None:
         return set()
+    # peak = well above the track's own 99th percentile (scale-free), with an absolute floor
     thr = max(p.tel_floor, p.tel_factor * float(np.percentile(tel, 99)))
     out = set()
     for s in units:
@@ -75,7 +90,7 @@ def find_joins(pt, sg, params=None):
     units = [int(s) for s in np.nonzero(pt.scaffold_npix > p.min_px)[0]]
     ends = [(s, e) for s in units for e in "ht"]
     g = sg.decay_long(2 * (p.window + p.skip) + 2)
-    sc = {}
+    sc = {}                                     # symmetric end-pair scores, all pairs
     for x, y in itertools.combinations(ends, 2):
         if x[0] != y[0]:
             sc[(x, y)] = sc[(y, x)] = end_score(pt, sg, x, y, p.window, p.skip, g)
@@ -86,6 +101,7 @@ def find_joins(pt, sg, params=None):
         if len(best[x]) < 2:
             continue
         (s1, y), (s2, _) = best[x]
+        # mutual best only, each pair once (x < y); far-below-threshold pairs not reported
         if not (best[y][0][1] == x and x < y) or s1 < 0.5 * p.score_min:
             continue
         second = max(s2, best[y][1][0])
@@ -105,6 +121,7 @@ def find_joins(pt, sg, params=None):
     other = {"h": "t", "t": "h"}
 
     def walk(s, enter):
+        """Follow accepted links from unit `s`, entered at end `enter`; returns the chain."""
         chain = []
         while s not in seen:
             seen.add(s)

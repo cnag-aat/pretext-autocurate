@@ -1317,3 +1317,24 @@ minimap2 for the haplotype alignments.
   `src/pretext_autocurate/vendor/telo_scan.py`, unchanged apart from a provenance header;
   `--telomere-motif` uses it by default (`--telo-scan` for another copy). Test: the bundled
   copy on a toy assembly gives 5p at a start, 3p at an end, both at an end-to-end join.
+
+## 2026-11-14: v1.1.0 released; code commented; suggestions recorded
+
+- v1.1.0 (evidence tracks: telo_scan strands, repeats, BUSCO pairs, `--add-tracks`): all
+  61 tests pass; main fast-forwarded and tagged `v1.1.0` at 60e7665, pushed to
+  cnag-aat/pretext-autocurate.
+- Commenting pass over every module in `src/pretext_autocurate/` (not `vendor/`):
+  docstrings for the functions that had none, inline comments at each step of the long
+  functions (why a threshold or guard exists, units, which decision row it produces),
+  stale docstrings corrected (allhaps.py still said joins were not done). Code unchanged:
+  checked by comparing each module's syntax tree, docstrings removed, with the v1.1.0
+  version.
+- `docs/HANDOFF.md` brought to v1.1.0 (tracks.py and vendor/ in the module table,
+  `--phasing` state, the curator's list with Red, telo_scan and hapscotch done) and a new
+  section "Suggestions for further development" (18 items: contig-led reference copy,
+  hemizygous chains from coverage, a shared Hi-C backbone, alignment-checked merges, a
+  scoring script over all fixtures, fixture-free tests for CI, splitting allhaps.py ...).
+- Correction to the `--add-tracks` entry above: the track copies keep the compressed
+  header, but PretextView's header hash also covers the file name, so a savestate for
+  `X.pretext` does not load on `X.tracks.pretext`. That is why `run` writes a separate
+  savestate for each copy (the code always did; the note was wrong).

@@ -27,12 +27,17 @@ CACHE = os.path.join(os.path.expanduser("~"), ".cache", "pretext-autocurate", "b
 def list_remote(name):
     """[(file name, size text)] of the server's archives for a lineage name, newest last."""
     html = urllib.request.urlopen(BUSCO_URL, timeout=60).read().decode()
+    # An Apache-style directory listing: the link, then date and size at the end of the line.
+    # Dates are ISO, so sorting by file name puts the newest archive last.
     pat = re.compile(r'href="(%s\.\d{4}-\d{2}-\d{2}\.tar\.gz)".*?\s(\d+[KMG]?)\s*$' % re.escape(name), re.M)
     return sorted(pat.findall(html))
 
 
 def resolve_lineage(lineage, cache=CACHE, download=False, log=sys.stderr):
-    """Directory of an unpacked lineage. `lineage` is a directory or a name like aves_odb12."""
+    """Directory of an unpacked lineage. `lineage` is a directory or a name like aves_odb12.
+
+    A name is looked for in `cache`; if absent and `download` is set, the newest archive is
+    fetched (name and size printed to `log` first) and unpacked there."""
     if os.path.isdir(lineage):
         return lineage
     local = os.path.join(cache, lineage)
@@ -50,7 +55,7 @@ def resolve_lineage(lineage, cache=CACHE, download=False, log=sys.stderr):
     print(f"downloading {BUSCO_URL}{fname} ({size}) to {archive}", file=log)
     urllib.request.urlretrieve(BUSCO_URL + fname, archive)
     with tarfile.open(archive) as t:
-        t.extractall(cache, filter="data")
+        t.extractall(cache, filter="data")    # "data": no absolute paths, links out, or devices
     os.remove(archive)
     if not os.path.isdir(local):
         raise RuntimeError(f"{fname} did not unpack to {local}")
@@ -76,8 +81,10 @@ def run_miniprot(genome, proteins, out_paf, threads=8, miniprot=None):
     if exe is None:
         raise RuntimeError("miniprot not found (PATH, --miniprot, or conda env 'pretext-autocurate').")
     os.makedirs(os.path.dirname(out_paf) or ".", exist_ok=True)
-    tmp = out_paf + ".tmp"
+    tmp = out_paf + ".tmp"                      # renamed when complete: an interrupted run is not cached
     with open(tmp, "w") as out, open(out_paf + ".log", "w") as log:
+        # -I: max intron size from the genome size; --outn 4: up to four alignments per protein,
+        # enough to see a duplicated gene in each of two haplotypes.
         subprocess.run([exe, "-t", str(threads), "-I", "--outn", "4", genome, proteins], stdout=out, stderr=log, check=True)
     os.replace(tmp, out_paf)
     return out_paf
@@ -92,20 +99,22 @@ def read_hits(paf, min_cov=0.8):
     with _open(paf) as f:
         for line in f:
             if line.startswith("#"):
-                continue
+                continue                        # miniprot's ##PAF / ##STA lines
             c = line.split("\t")
             if len(c) < 12:
                 continue
-            qlen, qs, qe = int(c[1]), int(c[2]), int(c[3])
+            qlen, qs, qe = int(c[1]), int(c[2]), int(c[3])     # protein coordinates (aa)
             if (qe - qs) / max(qlen, 1) < min_cov:
                 continue
-            gene = re.sub(r"_\d+$", "", c[0])
+            gene = re.sub(r"_\d+$", "", c[0])   # variant "<id>_<n>" -> BUSCO id
+            # miniprot's alignment score (AS:i:), else the PAF residue matches.
             score = next((int(x[5:]) for x in c[12:] if x.startswith("AS:i:")), int(c[9]))
             loci[gene].append((c[5], int(c[7]), int(c[8]), c[4], score))
     out = {}
     for gene, hits in loci.items():
         kept = []
         for h in sorted(hits, key=lambda h: -h[4]):
+            # best first; a hit overlapping a kept one on the same scaffold is the same locus
             if not any(k[0] == h[0] and h[1] < k[2] and k[1] < h[2] for k in kept):
                 kept.append(h)
         # a second locus counts only if it scores close to the best one (paralogs score lower)
@@ -116,9 +125,12 @@ def read_hits(paf, min_cov=0.8):
 def read_full_tables(specs):
     """Several tables merged. Each spec is a path, or `PREFIX=path` for a table made on one
     haplotype alone: the prefix (e.g. H1) is put in front of every sequence name, with an
-    underscore, so `scaffold_14` becomes `H1_scaffold_14` as in the diploid map."""
+    underscore, so `scaffold_14` becomes `H1_scaffold_14` as in the diploid map.
+
+    Returns the `read_full_table` structure for all tables together."""
     out = defaultdict(list)
     for spec in specs:
+        # A path that exists is taken as is, even if it contains "=".
         prefix, path = spec.split("=", 1) if "=" in spec and not os.path.exists(spec) else ("", spec)
         if prefix and not prefix.endswith("_"):
             prefix += "_"
@@ -132,8 +144,10 @@ def false_duplicates(hits, hap_of, min_genes=3, min_frac=0.8):
     haplotype: candidates for a false duplication (or haplotig) of that region.
 
     Returns [(scaffold, other scaffold, start, end, shared genes, genes on scaffold)], the
-    smaller-gene-count scaffold first; start/end delimit the copies on the other scaffold."""
-    on = defaultdict(dict)
+    smaller-gene-count scaffold first; start/end delimit the copies on the other scaffold (bp).
+    Sorted by shared genes, most first. `hap_of` as in `summarise`; a call needs at least
+    `min_genes` shared genes and `min_frac` of the scaffold's genes."""
+    on = defaultdict(dict)                      # scaffold -> {gene: [(start, end)]}
     for gene, loci in hits.items():
         for sc, a, b, _, _ in loci:
             on[sc].setdefault(gene, []).append((a, b))
@@ -149,6 +163,7 @@ def false_duplicates(hits, hap_of, min_genes=3, min_frac=0.8):
                     other[sc2].append((gene, a, b))
         for sc2, lst in other.items():
             shared = {g for g, _, _ in lst}
+            # The other scaffold must carry more genes: the smaller one is the likely extra copy.
             if len(shared) >= min_genes and len(shared) >= min_frac * len(genes) and len(on[sc2]) > len(genes):
                 out.append((sc, sc2, min(a for _, a, _ in lst), max(b for _, _, b in lst), len(shared), len(genes)))
     return sorted(out, key=lambda r: -r[4])
@@ -167,9 +182,10 @@ def read_full_table(path):
             if line.startswith("#") or not line.strip():
                 continue
             c = line.rstrip("\n").split("\t")
+            # Columns: id, status, sequence, start, end, strand, score, ...
             if len(c) < 7 or c[1] not in ("Complete", "Duplicated"):
                 continue
-            a, b = int(c[3]), int(c[4])
+            a, b = int(c[3]), int(c[4])         # ordered below, whatever the strand
             out[c[0]].append((c[2], min(a, b), max(a, b), c[5], float(c[6])))
     return dict(out)
 
@@ -177,7 +193,9 @@ def read_full_table(path):
 def summarise(hits, hap_of, n_genes=None):
     """Per haplotype: complete, single, duplicated, missing. Per scaffold: gene counts.
 
-    `hap_of(scaffold name)` gives the haplotype label ('' to ignore)."""
+    `hap_of(scaffold name)` gives the haplotype label ('' to ignore). `n_genes` is the size
+    of the lineage (default: the genes seen in `hits`, which undercounts missing ones).
+    Returns (per haplotype, per scaffold, {scaffold: set of genes})."""
     haps = defaultdict(lambda: dict(single=0, duplicated=0))
     per_scaffold = defaultdict(lambda: dict(genes=0, duplicated=0))
     genes_on = defaultdict(set)
@@ -189,6 +207,7 @@ def summarise(hits, hap_of, n_genes=None):
         for h, scs in by.items():
             if not h:
                 continue
+            # Duplicated within a haplotype; one copy in each of two haplotypes is normal.
             haps[h]["duplicated" if len(scs) > 1 else "single"] += 1
             for sc in scs:
                 per_scaffold[sc]["genes"] += 1

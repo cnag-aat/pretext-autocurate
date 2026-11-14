@@ -5,13 +5,17 @@ from typing import NamedTuple
 
 from .pretextio import inflate, deflate, header_hash
 
-BREAK_DELTA = -2147483648
-MAX_WAYPOINTS = 255
-MAX_EDITS = 32768
+BREAK_DELTA = -2147483648      # INT32_MIN in the delta field marks a break (FORMATS.md)
+MAX_WAYPOINTS = 255            # waypoint count is a u8
+MAX_EDITS = 32768              # PretextView's edit stack size
 
 
 class Edit(NamedTuple):
-    """Move pixels [x, y] by delta, then reverse them if invert; or break after pixel x."""
+    """Move pixels [x, y] by delta, then reverse them if invert; or break after pixel x.
+
+    Pixels are positions in the map as it stands when the edit is replayed (after all
+    earlier edits), not original pixels.
+    """
     x: int
     y: int
     delta: int
@@ -19,10 +23,12 @@ class Edit(NamedTuple):
 
     @property
     def is_break(self):
+        """True for a break edit (delta == INT32_MIN); x is the last pixel before the cut."""
         return self.delta == BREAK_DELTA
 
 
 class Waypoint(NamedTuple):
+    """PretextView waypoint: f32 map coordinates (pixel/npix - 0.5 per axis), zoom, u8 id."""
     x: float
     y: float
     z: float
@@ -31,6 +37,10 @@ class Waypoint(NamedTuple):
 
 @dataclass
 class SaveState:
+    """Decoded savestate payload (FORMATS.md "Savestate"); sections we do not edit stay raw.
+
+    Contig indices in `scaffs` and `meta_flags` count contigs along the map after all edits.
+    """
     head: bytes = b""           # theme, colours, sizes, colour map, gamma (331 bytes)
     camera: bytes = b""         # 3 x f32
     edits: list = None
@@ -40,13 +50,14 @@ class SaveState:
     meta_flags: list = None     # (contig index after edits, tag bitmask)
     tags: dict = None           # tag id -> name
     ext: bytes = b""            # per-graph display settings
-    header_hash: bytes = None
-    tail: int = 3
+    header_hash: bytes = None   # 8 bytes tying the savestate to one .pretext file
+    tail: int = 3               # 3 = user save (carries the hash), 2 = auto cache (no hash)
 
-    _HEAD = 2 + 288 + 28 + 1 + 12
+    _HEAD = 2 + 288 + 28 + 1 + 12   # bytes before the camera, kept verbatim
 
     @classmethod
     def load(cls, path):
+        """Read a version-2 savestate file (user save or auto cache)."""
         with open(path, "rb") as f:
             d = f.read()
         if d[:5] != b"ptsx\x02":
@@ -56,11 +67,12 @@ class SaveState:
         if s.tail == 3:
             s.header_hash = d[off:off + 8]
             off += 8
-        nc, nf = struct.unpack_from("<II", d, off)
+        nc, nf = struct.unpack_from("<II", d, off)     # compressed / raw payload sizes
         s._parse(inflate(d[off + 8:off + 8 + nc], nf))
         return s
 
     def _parse(self, raw):
+        """Split an inflated payload into fields, in the order of the FORMATS.md table."""
         p = self._HEAD
         self.head = raw[:p]
         self.camera = raw[p:p + 12]
@@ -76,7 +88,7 @@ class SaveState:
             inv = bool(raw[flag_off + ((i + 1) >> 3)] >> ((i + 1) & 7) & 1)
             self.edits.append(Edit(x, y, dlt, inv and dlt != BREAK_DELTA))
         p = flag_off + ((n + 7) >> 3)
-        n_wp = raw[p]
+        n_wp = raw[p]                         # u8, unlike the u32 counts elsewhere
         p += 1
         self.waypoints = [Waypoint(*struct.unpack_from("<fffB", raw, p + 13 * i)) for i in range(n_wp)]
         p += 13 * n_wp
@@ -93,12 +105,12 @@ class SaveState:
         n_tags = raw[p]
         p += 1
         self.tags = {}
-        for _ in range(n_tags):
+        for _ in range(n_tags):               # u8 id + NUL-terminated name
             tid = raw[p]
             e = raw.index(b"\0", p + 1)
             self.tags[tid] = raw[p + 1:e].decode()
             p = e + 1
-        self.ext = raw[p:]
+        self.ext = raw[p:]                    # per-graph settings: 32 bytes per graph track
 
     @classmethod
     def blank(cls):
@@ -109,6 +121,7 @@ class SaveState:
         return s
 
     def tag_id(self, name):
+        """Id (bit number in meta-flag masks) of the tag called `name`; KeyError if absent."""
         for tid, n in self.tags.items():
             if n == name:
                 return tid
@@ -134,6 +147,7 @@ class SaveState:
         return edits
 
     def payload(self):
+        """Uncompressed payload; ValueError past PretextView's edit / waypoint limits."""
         edits = self.safe_edits()
         if len(edits) > MAX_EDITS:
             raise ValueError(f"{len(edits)} edits; PretextView allows {MAX_EDITS}")
@@ -143,6 +157,8 @@ class SaveState:
         out = bytearray(self.head + self.camera + struct.pack("<I", n))
         flags = bytearray((n + 7) >> 3)
         for i, e in enumerate(edits):
+            # edit i -> flag bit i+1; a bit past the array (n % 8 == 0) cannot be written
+            # here, and safe_edits ensures the waypoint-count byte already gives the right value
             out += struct.pack("<IIi", e.x, e.y, e.delta)
             if e.invert and not e.is_break and ((i + 1) >> 3) < len(flags):
                 flags[(i + 1) >> 3] |= 1 << ((i + 1) & 7)
@@ -156,7 +172,7 @@ class SaveState:
         for c, fl in self.meta_flags:
             out += struct.pack("<IQ", c, fl)
         out += bytes([len(self.tags)])
-        for tid in sorted(self.tags):
+        for tid in sorted(self.tags):   # sorted only for a stable byte layout
             out += bytes([tid]) + self.tags[tid].encode() + b"\0"
         return bytes(out + self.ext)
 
@@ -169,7 +185,9 @@ class SaveState:
         raw = self.payload()
         comp = deflate(raw)
         with open(path, "wb") as f:
+            # always written as a user save (tail 3), so PretextView checks the hash
             f.write(b"ptsx\x02\x03" + self.header_hash + struct.pack("<II", len(comp), len(raw)) + comp)
 
     def tag_names(self, mask):
+        """Names of the tags whose bit is set in a meta-flag bitmask, by tag id."""
         return [name for tid, name in sorted(self.tags.items()) if mask >> tid & 1]

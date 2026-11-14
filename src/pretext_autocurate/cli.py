@@ -10,6 +10,7 @@ from .layout import build_layout, invisible_scaffolds, write_agp, write_tsv
 
 
 def cmd_info(a):
+    """`info`: header, savestate hash, tracks (and with --scaffolds each scaffold's bp and px)."""
     pt = Pretext(a.map)
     print(f"file\t{pt.path}")
     print(f"hash\t{pt.hash.hex()}")
@@ -28,9 +29,10 @@ def cmd_info(a):
 
 
 def cmd_dump(a):
+    """`dump`: a savestate in readable form (edits, tags, waypoints) and the layout it gives."""
     st = SaveState.load(a.state)
     pt = Pretext(a.map, load_graphs=False)
-    ok = st.header_hash == pt.hash
+    ok = st.header_hash == pt.hash              # PretextView loads a savestate only on its own map
     print(f"hash\t{st.header_hash.hex() if st.header_hash else None}\t{'matches map' if ok else 'DOES NOT MATCH MAP'}")
     kinds = collections.Counter(
         "break" if e.is_break else "invert" if e.delta == 0 else "move+invert" if e.invert else "move"
@@ -44,7 +46,7 @@ def cmd_dump(a):
         print("#edit\tx\ty\tdelta\tinvert")
         for i, e in enumerate(st.edits):
             print(f"{i}\t{e.x}\t{e.y}\t{'break' if e.is_break else e.delta}\t{int(e.invert)}")
-    for w in st.waypoints:
+    for w in st.waypoints:                      # x is stored in screen units, -0.5..0.5 over the map
         print(f"waypoint\t{w.id + 1}\tpx {round((w.x + 0.5) * pt.npix)}")
     print("#contig\tout_scaffold\tpainted\tscaffold\tstart_bp\tend_bp\tstrand\tmap_px\tlen_px\ttags")
     for p in build_layout(pt, st):
@@ -52,6 +54,8 @@ def cmd_dump(a):
 
 
 def cmd_convert(a):
+    """`convert`: a savestate to AGP or TSV, or re-hashed for another map of the same assembly
+    (same scaffolds and pixels, e.g. the high-MQ map), so PretextView loads it there."""
     pt = Pretext(a.map, load_graphs=False)
     st = SaveState.load(a.state)
     if st.header_hash != pt.hash:
@@ -72,6 +76,8 @@ def cmd_convert(a):
 
 
 def cmd_haplotigs(a):
+    """`haplotigs`: single-mode haplotig calls among small scaffolds; writes a TSV and a
+    savestate with Haplotig tags for calls of tier `--tag` and above."""
     import os
     from .haplotig import detect_haplotigs, write_calls, Params
     pt = Pretext(a.map)
@@ -85,6 +91,7 @@ def cmd_haplotigs(a):
     tiers = {"high": ("haplotig_high",), "medium": ("haplotig_high", "haplotig_medium")}[a.tag]
     st = SaveState.blank()
     bit = 1 << st.tag_id("Haplotig")
+    # Tags are keyed by contig index in map order, counting only scaffolds with at least a pixel.
     index = {int(s): i for i, s in enumerate(sorted(pt.scaffold_start[pt.scaffold_npix > 0]))}
     st.meta_flags = sorted((index[c.start_px], bit) for c in calls if c.call in tiers)
     st.save(base + ".savestate_autocurate", pt.path)
@@ -94,7 +101,8 @@ def cmd_haplotigs(a):
           file=sys.stderr)
 
 
-# Decisions a curator should look at, by mode: everything else was applied with clear evidence.
+# Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
+# key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
                   "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
                   "sex_chromosome_candidate": "hemizygous chromosome", "pair_unequal": "possible sex chromosome pair",
@@ -103,8 +111,12 @@ REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs"
 
 
 def _write_review(rows, path, mode):
-    """The decisions that need a curator's eye, most important first, one line each."""
+    """The decisions that need a curator's eye, most important first, one line each.
+
+    `rows` are allhaps row dicts or single-mode Decision objects, by `mode`. Returns the number
+    of lines written."""
     if mode == "allhaps":
+        # Unpaired scaffolds under 1 Mb (or with no length) are too many and too small to list.
         sel = [(list(REVIEW_ALLHAPS).index(r["action"]), r) for r in rows if r["action"] in REVIEW_ALLHAPS
                and not (r["action"] == "unpaired" and (r["length_mb"] == "" or float(r["length_mb"]) < 1.0))]
         sel.sort(key=lambda x: x[0])
@@ -115,7 +127,7 @@ def _write_review(rows, path, mode):
                         f"{r['evidence']}\n")
     else:
         sel = [d for d in rows if d.confidence in ("low", "medium") or d.action.startswith("flag")]
-        sel.sort(key=lambda d: (d.confidence != "low", d.scaffold))
+        sel.sort(key=lambda d: (d.confidence != "low", d.scaffold))     # low confidence first
         with open(path, "w") as f:
             f.write("action\tconfidence\tscaffold\tlength_bp\ttarget\tevidence\n")
             for d in sel:
@@ -124,6 +136,8 @@ def _write_review(rows, path, mode):
 
 
 def _write_run_info(a, path, mode, extra=""):
+    """Version, date, command line, mode and every option, so a run can be repeated; `extra`
+    is appended as is (tab-separated lines, e.g. the level of a sweep)."""
     import datetime
     import platform
     with open(path, "w") as f:
@@ -133,13 +147,16 @@ def _write_run_info(a, path, mode, extra=""):
         f.write(f"command\t{' '.join(sys.argv)}\n")
         f.write(f"mode\t{mode}\n")
         for k, v in sorted(vars(a).items()):
-            if k != "fn":
+            if k != "fn":                       # the subcommand's function, not an option
                 f.write(f"option\t{k}\t{v}\n")
         f.write(extra)
 
 
 def _detect_mode(pt, hap_regex):
-    """allhaps if at least two haplotype prefixes each hold a fifth of the sequence."""
+    """allhaps if at least two haplotype prefixes each hold a fifth of the sequence.
+
+    Returns (mode, sorted prefixes found). The fifth keeps a few prefixed unplaced scaffolds
+    (e.g. a lone H2_ contig in a primary assembly) from switching the mode."""
     import re
     lens = pt.scaffold_len_bp()
     by = collections.Counter()
@@ -152,10 +169,14 @@ def _detect_mode(pt, hap_regex):
 
 
 def _load_tracks(a, pt):
-    """Telomere strand and repeat tracks: from the map, from files, or computed from --fasta."""
+    """Telomere strand and repeat tracks: from the map, from files, or computed from --fasta.
+
+    Puts them in pt.graphs (see tracks.load) and keeps the files in `a.track_files` for
+    --add-tracks. Exits on a tool error."""
     import os
     from . import tracks
     files = {"telomere_5p": a.telomere_5p, "telomere_3p": a.telomere_3p, "repeat": a.repeats}
+    # Given files win; the tools run only for what is missing (and their outputs are cached).
     work = a.work_dir or os.path.join(a.out_dir, "work")
     try:
         if a.telomere_motif and not (a.telomere_5p and a.telomere_3p):
@@ -180,7 +201,8 @@ def _load_tracks(a, pt):
         if path and k not in got:
             print(f"warning: no sequence name in {path} matches the map; track {k} not used", file=sys.stderr)
     if any(src != "map" for src in got.values()) and not a.add_tracks:
-        names = {"telomere_5p": "5p_telomere", "telomere_3p": "3p_telomere", "repeat": "repeat_density"}
+        # Tracks from files are used by the rules but not visible in PretextView: say how to add them.
+        names ={"telomere_5p": "5p_telomere", "telomere_3p": "3p_telomere", "repeat": "repeat_density"}
         print("to see these tracks in PretextView, add them to a copy of the map with PretextGraph, e.g.\n  PretextGraph -i "
               + a.map[0] + " -o with_tracks.pretext "
               + " ".join(f"-t{i + 1} {p} -n{i + 1} {names[k]}" for i, (k, p) in enumerate(
@@ -189,12 +211,16 @@ def _load_tracks(a, pt):
 
 def _with_tracks(a, hits):
     """--add-tracks: a copy of every map with the evidence tracks, for PretextView. Returns the
-    paths written; the caller saves a savestate for each of them too."""
+    paths written; the caller saves a savestate for each of them too (the savestate hash covers
+    the file name, so the original map's savestate does not load on the copy).
+
+    `hits` are BUSCO gene copies (None: no BUSCO tracks). A failure on one map is a warning."""
     import os
     import re
     from . import tracks
     if not a.add_tracks:
         return []
+    # Graph names as telo_scan/PretextGraph users know them; tracks.from_map reads them back.
     names = {"telomere_5p": "5p_telomere", "telomere_3p": "3p_telomere", "repeat": "repeat_density"}
     files = {names[k]: v for k, v in getattr(a, "track_files", {}).items() if k in names}
     if hits:
@@ -221,12 +247,16 @@ def _with_tracks(a, hits):
 
 
 def cmd_run(a):
+    """`run`: the pre-curation pass. Analyses the first (MQ0) map in single or allhaps mode;
+    writes per output directory (one per level with --sweep) decisions.tsv, review.tsv, an AGP,
+    run.txt, and a savestate for every map given (and every --add-tracks copy)."""
     import os
     from .curate import curate_single, write_decisions
     for m in a.map:
         if not os.path.exists(m):
             sys.exit(f"error: {m} not found")
-    maps = [Pretext(m, load_graphs=(i == 0)) for i, m in enumerate(a.map)]
+    maps = [Pretext(m, load_graphs=(i == 0)) for i, m in enumerate(a.map)]   # tracks: first map only
+    # One savestate serves every map only if they share scaffolds and pixels.
     try:
         check_same_layout(maps)
     except ValueError as e:
@@ -259,12 +289,13 @@ def cmd_run(a):
                                      minimap2=a.minimap2)
                 except RuntimeError as e:
                     sys.exit(f"error: {e}")
-            small = read_paf(sp, min_mapq=0)
+            small = read_paf(sp, min_mapq=0)        # mapq 0 kept: copies within a haplotype score 0
             print(f"small scaffolds: {len(small)} alignment blocks from {sp}", file=sys.stderr)
         if a.paf or a.fasta:
             from .homology import align_haplotypes, read_paf, fasta_lengths
             paf = a.paf
             if not paf:
+                # Catch a wrong --fasta before a long alignment, not after.
                 missing = set(pt.names) - set(fasta_lengths(a.fasta))
                 if missing:
                     sys.exit(f"error: {len(missing)} scaffolds of the map are not in {a.fasta} (e.g. {sorted(missing)[0]}); "
@@ -300,8 +331,8 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             hits = busco.read_hits(mp)
             print(f"BUSCO: complete hits for {len(hits)} genes from {mp}", file=sys.stderr)
-        tracked = _with_tracks(a, hits)
-        levels = [float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
+        tracked = _with_tracks(a, hits)             # once: the tracks do not depend on the level
+        levels =[float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
             try:
@@ -314,6 +345,7 @@ def cmd_run(a):
             prefix = os.path.join(out_dir, a.prefix)
             write_rows(rows, prefix + ".decisions.tsv")
             write_agp(build_layout(pt, st), prefix + ".agp")
+            # One savestate per map, each with that map's hash (it covers the file name).
             for path in [m.path for m in maps] + tracked:
                 name = os.path.basename(path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
                 st.save(os.path.join(out_dir, name), path)

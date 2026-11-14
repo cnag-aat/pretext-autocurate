@@ -26,6 +26,7 @@ def find_tool(name, explicit=None):
     roots = [os.environ.get("CONDA_PREFIX", ""), os.path.expanduser("~/miniconda3"), "/opt/miniconda3",
              os.path.expanduser("~/mambaforge"), os.path.expanduser("~/miniforge3")]
     for r in roots:
+        # <root>/envs/<env> for a base install; <prefix>/../<env> when CONDA_PREFIX is itself an env.
         for cand in (os.path.join(r, "envs", TOOL_ENV, "bin", name), os.path.join(r, "..", TOOL_ENV, "bin", name)):
             if r and os.path.exists(cand):
                 return os.path.abspath(cand)
@@ -33,11 +34,12 @@ def find_tool(name, explicit=None):
 
 
 def _open(path):
+    """Text handle on a plain or gzipped (.gz) file."""
     return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
 
 
 def fasta_lengths(fasta):
-    """{name: length} without loading sequences."""
+    """{name: length in bp} without loading sequences. Name is the header up to the first space."""
     out, name, n = {}, None, 0
     with _open(fasta) as f:
         for line in f:
@@ -46,16 +48,18 @@ def fasta_lengths(fasta):
                     out[name] = n
                 name, n = line[1:].split()[0], 0
             else:
-                n += len(line) - 1
+                n += len(line) - 1          # minus the newline (assumes "\n" line ends)
     if name is not None:
         out[name] = n
     return out
 
 
 def split_by_haplotype(fasta, workdir, hap_regex=r"^(H\d+)_"):
-    """Write one FASTA per haplotype prefix into workdir; returns {hap: path}. Reuses files."""
+    """Write one FASTA per haplotype prefix into workdir; returns {hap: path}. Reuses files.
+
+    The prefix is group 1 of `hap_regex` on the header; others go to "unassigned"."""
     os.makedirs(workdir, exist_ok=True)
-    done = os.path.join(workdir, "split.done")
+    done = os.path.join(workdir, "split.done")      # written last: a partial split is redone
     if os.path.exists(done):
         with open(done) as f:
             return dict(line.rstrip("\n").split("\t") for line in f)
@@ -79,7 +83,8 @@ def split_by_haplotype(fasta, workdir, hap_regex=r"^(H\d+)_"):
 
 
 def align_haplotypes(fasta, workdir, hap_regex=r"^(H\d+)_", threads=8, minimap2=None, preset="asm5"):
-    """minimap2 of the second haplotype against the first. Returns the PAF path (cached)."""
+    """minimap2 of the second haplotype against the first (sorted prefixes, e.g. H2 vs H1;
+    query H2, target H1). Primary alignments only. Returns the PAF path (cached)."""
     exe = find_tool("minimap2", minimap2)
     if exe is None:
         raise RuntimeError("minimap2 not found (PATH, --minimap2, or conda env 'pretext-autocurate'). "
@@ -91,8 +96,9 @@ def align_haplotypes(fasta, workdir, hap_regex=r"^(H\d+)_", threads=8, minimap2=
     paf = os.path.join(workdir, f"{haps[1]}_vs_{haps[0]}.{preset}.paf")
     if os.path.exists(paf) and os.path.getsize(paf) > 0:
         return paf
-    tmp = paf + ".tmp"
+    tmp = paf + ".tmp"                              # renamed when complete: an interrupted run is not cached
     with open(tmp, "w") as out, open(paf + ".log", "w") as log:
+        # asm5: haplotypes of one individual differ by well under 5%.
         subprocess.run([exe, "-x", preset, "-t", str(threads), "--secondary=no", parts[haps[0]], parts[haps[1]]],
                        stdout=out, stderr=log, check=True)
     os.replace(tmp, paf)
@@ -104,7 +110,9 @@ def align_small(fasta, workdir, max_bp=10_000_000, threads=8, minimap2=None, pre
     haplotypes), ignoring each sequence's alignment to itself (-D) and keeping secondary
     alignments. This shows what the H2-against-H1 alignment cannot: a small scaffold's
     copies in its own haplotype (false duplications, haplotigs, same-prefix homologs) next
-    to its homolog in the other. Returns the PAF path (cached)."""
+    to its homolog in the other. Returns the PAF path (cached).
+
+    -N 5 keeps up to five secondary alignments, -p 0.5 those scoring at least half the primary."""
     exe = find_tool("minimap2", minimap2)
     if exe is None:
         raise RuntimeError("minimap2 not found (PATH, --minimap2, or conda env 'pretext-autocurate'). "
@@ -114,7 +122,7 @@ def align_small(fasta, workdir, max_bp=10_000_000, threads=8, minimap2=None, pre
     if os.path.exists(paf) and os.path.getsize(paf) > 0:
         return paf
     lens = fasta_lengths(fasta)
-    small = os.path.join(workdir, "small.fa")
+    small = os.path.join(workdir, "small.fa")      # the queries; temporary
     with _open(fasta) as f, open(small, "w") as out:
         keep = False
         for line in f:
@@ -135,6 +143,9 @@ def align_small(fasta, workdir, max_bp=10_000_000, threads=8, minimap2=None, pre
 
 @dataclass
 class Block:
+    """One PAF line: query q[qs:qe] aligned to target t[ts:te] (bp, 0-based half-open, both on
+    the forward strand); `matches` is PAF column 10 (residue matches), `primary` is False
+    for secondary alignments (tp:A:S)."""
     q: str
     qs: int
     qe: int
@@ -149,11 +160,14 @@ class Block:
 
 def read_paf(path, min_len=10000, min_mapq=30):
     """Alignment blocks. Low mapping quality is dropped: repeats (e.g. on a W chromosome)
-    otherwise align to unrelated small chromosomes and compete with the true homolog."""
+    otherwise align to unrelated small chromosomes and compete with the true homolog.
+
+    `min_len` is on the alignment block length (PAF column 11, bp). Callers that want the
+    repeats too pass min_mapq=0 and filter on Block.mapq later."""
     out = []
     with _open(path) as f:
         for line in f:
-            c = line.split("\t", 12)
+            c = line.split("\t", 12)                # columns 13+ (SAM-like tags) stay one string
             if int(c[10]) >= min_len and int(c[11]) >= min_mapq:
                 out.append(Block(c[0], int(c[2]), int(c[3]), c[5], int(c[7]), int(c[8]), c[4] == "+", int(c[9]), int(c[11]),
                                  "tp:A:S" not in (c[12] if len(c) > 12 else "")))
@@ -161,7 +175,8 @@ def read_paf(path, min_len=10000, min_mapq=30):
 
 
 def summarise(blocks):
-    """{(q, t): dict(bp, same_bp, q_span, t_span)}: aligned bases per scaffold pair and strand."""
+    """{(q, t): dict(bp, same_bp, qmin, qmax, tmin, tmax)}: aligned query bases per scaffold
+    pair, those on the same strand, and the span (bp) the blocks cover on each scaffold."""
     acc = defaultdict(lambda: dict(bp=0, same_bp=0, qmin=10**12, qmax=0, tmin=10**12, tmax=0))
     for b in blocks:
         a = acc[(b.q, b.t)]

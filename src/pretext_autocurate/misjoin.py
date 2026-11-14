@@ -15,9 +15,11 @@ from .signal import Signal
 
 @dataclass
 class Params:
+    """Misjoin thresholds. Windows in full-resolution pixels; levels are insulation ratios
+    (contact / decay expectation, 1 = intact scaffold)."""
     w_near: int = 10          # px: window touching the boundary
     w_far: int = 30           # px: window set back by `skip` (ignores the saturated diagonal)
-    skip: int = 10
+    skip: int = 10            # px left out on each side of the boundary by the far window
     cut_max: float = 0.2      # both windows below this fraction of expectation
     strong_max: float = 0.1   # needed to cut where there is no gap nearby
     side_min: float = 0.5     # each side must be internally connected at least this well
@@ -28,17 +30,24 @@ class Params:
 
 @dataclass
 class Cut:
+    """A proposed misjoin cut; one row of the cuts TSV."""
     scaffold: str
     after_px: int             # cut after this original pixel
-    bp: int
+    bp: int                   # approximate cut position in the scaffold (pixel-derived)
     at_gap: bool
-    near: float
-    far: float
-    apply: bool
+    near: float               # minimum insulation ratio, near window
+    far: float                # minimum insulation ratio, far window (NaN near scaffold ends)
+    apply: bool               # False: reported only
     reason: str
 
 
 def detect_misjoins(pt, params=None, signal=None):
+    """Find misjoins in `pt` (a Pretext or SegmentedMap); returns Cuts sorted by pixel.
+
+    Two passes: sharp dips of insulation with normal contact on each side (cut, snapped to
+    a gap within `snap` px when there is one), then short foreign pieces bounded by two
+    near-window dips. `signal` may be passed to reuse its caches.
+    """
     p = params or Params()
     sg = signal or Signal(pt)
     near = sg.insulation(p.w_near, 0)
@@ -46,21 +55,24 @@ def detect_misjoins(pt, params=None, signal=None):
     gap = pt.graphs.get("gap")
     gpos = np.nonzero(gap > 0)[0] if gap is not None else np.array([], dtype=int)
     n = pt.npix
-    # close to scaffold ends only the near window exists
+    # close to scaffold ends only the near window exists; elsewhere both must be low (max)
     score = np.where(np.isfinite(far), np.maximum(near, far), near)
     low = np.isfinite(score) & (score < p.cut_max)
     cuts, q = [], 0
     idx = np.nonzero(low)[0]
+    # runs of low boundaries (gaps <= min_piece px) are one candidate, cut at its minimum
     groups = np.split(idx, np.nonzero(np.diff(idx) > p.min_piece)[0] + 1) if len(idx) else []
     for grp in groups:
         q = int(grp[np.argmin(score[grp])])
         s = int(pt.orig_scaffold[q])
         a0, a1 = int(pt.scaffold_start[s]), int(pt.scaffold_start[s] + pt.scaffold_npix[s] - 1)
         lo, hi = max(a0, int(grp[0]) - p.side_reach), min(a1, int(grp[-1]) + p.side_reach)
+        # side checks start w_near px away, where the near window no longer spans the dip
         left = near[lo:max(lo, int(grp[0]) - p.w_near + 1)]
         right = near[min(hi, int(grp[-1]) + p.w_near):hi + 1]
         sides_ok = (np.isfinite(left).any() and np.nanmax(left) >= p.side_min and
                     np.isfinite(right).any() and np.nanmax(right) >= p.side_min)
+        # gaps of this scaffold within `snap` px of the run (not its last pixel: no cut there)
         cand = gpos[(gpos >= max(a0, int(grp[0]) - p.snap)) & (gpos <= min(a1 - 1, int(grp[-1]) + p.snap))]
         at_gap = len(cand) > 0
         if at_gap:
@@ -74,10 +86,11 @@ def detect_misjoins(pt, params=None, signal=None):
             ok, why = True, "no gap nearby, but contact across this point is below %.0f%% of expectation" % (100 * p.strong_max)
         else:
             ok, why = True, "no gap nearby; contact across this point is below %.0f%% of expectation on both scales, with normal contact on each side" % (100 * p.cut_max)
+        # bp = end of pixel q within the scaffold, i.e. where the cut falls
         cuts.append(Cut(pt.names[s], q, int(round((pt.rel_coord[q] + 1) * pt.bp_per_pix)), at_gap, nv, fv, ok, why))
     # Small foreign pieces: two sharp dips of the near window close together, while the far
     # window (which reaches over the piece) is normal. Both ends are cut, at gaps only.
-    used = np.zeros(n, dtype=bool)
+    used = np.zeros(n, dtype=bool)          # boundaries already explained by the first pass
     for grp in groups:
         used[max(0, grp[0] - p.min_piece):grp[-1] + p.min_piece + 1] = True
     idx = np.nonzero(np.isfinite(near) & (near < p.cut_max) & ~used)[0]
@@ -86,8 +99,9 @@ def detect_misjoins(pt, params=None, signal=None):
         q = int(grp[np.argmin(near[grp])])
         cand = gpos[np.abs(gpos - q) <= p.snap]
         cand = cand[pt.orig_scaffold[cand] == pt.orig_scaffold[q]] if len(cand) else cand
+        # (cut pixel, snapped to a gap?, near minimum, raw minimum)
         dips.append((int(cand[np.argmin(np.abs(cand - q))]) if len(cand) else q, len(cand) > 0, float(near[grp].min()), q))
-    reach = 2 * (p.w_far + p.skip)
+    reach = 2 * (p.w_far + p.skip)          # longest piece the far window can still span
     for (q1, g1, v1, r1), (q2, g2, v2, r2) in zip(dips, dips[1:]):
         if pt.orig_scaffold[q1] != pt.orig_scaffold[q2] or not p.min_piece <= q2 - q1 <= reach:
             continue
@@ -109,7 +123,8 @@ def weak_junctions(pt, signal, taken=(), near_max=0.5, far_max=0.6, big_px=400, 
 
     These are not cut outright. They are candidate breakpoints for rearrangements: the
     caller cuts them tentatively and keeps a cut only if the pieces fit better elsewhere.
-    Returns [(pixel, near, far)].
+    Returns [(pixel, near, far)], pixel = cut after it; ratios as in `detect_misjoins`.
+    Gaps within `merge` px of `taken` (cuts already made) or of each other count once.
     """
     gap = pt.graphs.get("gap")
     if gap is None:
@@ -121,12 +136,12 @@ def weak_junctions(pt, signal, taken=(), near_max=0.5, far_max=0.6, big_px=400, 
         q = int(q)
         if pt.scaffold_npix[pt.orig_scaffold[q]] <= big_px or (len(taken) and np.abs(taken - q).min() <= merge):
             continue
-        w, f = near[max(0, q - 2):q + 3], far[max(0, q - 2):q + 3]
+        w, f = near[max(0, q - 2):q + 3], far[max(0, q - 2):q + 3]     # +-2 px around the gap
         if not np.isfinite(w).any():
             continue
         v = float(np.nanmin(w))
         fv = float(np.nanmin(f)) if np.isfinite(f).any() else float("nan")
-        if v < near_max and not fv >= far_max:
+        if v < near_max and not fv >= far_max:      # a NaN far window does not veto
             if out and q - out[-1][0] <= merge:
                 if v < out[-1][1]:
                     out[-1] = (q, v, fv)
@@ -136,6 +151,7 @@ def weak_junctions(pt, signal, taken=(), near_max=0.5, far_max=0.6, big_px=400, 
 
 
 def write_cuts(rows, path):
+    """Write Cuts as TSV (dataclass fields as columns, floats to 3 decimals)."""
     cols = list(asdict(rows[0])) if rows else ["scaffold"]
     with open(path, "w") as f:
         f.write("\t".join(cols) + "\n")

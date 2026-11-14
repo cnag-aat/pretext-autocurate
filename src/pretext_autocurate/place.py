@@ -18,7 +18,8 @@ from .signal import Signal
 
 @dataclass
 class Params:
-    max_frac: float = 0.2        # candidates are scaffolds shorter than this x the longest
+    """Placement thresholds; sizes in full-resolution pixels."""
+    max_frac: float = 0.2       # candidates are scaffolds shorter than this x the longest
     max_px: int = 150            # ... and no longer than this: the adjacency expectation is
                                  # only valid well inside the measured decay range (200 px)
     anchor_ratio: float = 5.0    # anchors are at least this many times longer than the piece
@@ -27,33 +28,35 @@ class Params:
     w_loc: int = 5               # half-window (px) for the position
     cis_min: float = 0.5         # window contact / adjacent expectation needed to belong
     ratio_min: float = 1.3       # best anchor / next best anchor
-    loc_min_px: int = 4
+    loc_min_px: int = 4          # smaller pieces are never localised
     loc_max_cov: float = 2.0     # above this the piece is treated as repeat: unloc only
     junction_tol: int = 5        # px from the peak to a gap or anchor end
     orient_min: float = 1.15     # contact ratio between the two orientations
-    flank: int = 15
+    flank: int = 15              # px of anchor on each side of a junction used for orientation
     junction_max: float = 0.6    # a junction has room for an insertion if contact across it is below this
 
 
 @dataclass
 class Placement:
+    """Placement call for one small scaffold; one row of the placements TSV."""
     scaffold: str
     start_px: int
     length_px: int
     length_bp: int
     call: str            # localised | unloc | unplaced | too_small
     anchor: str
-    anchor_bp: int
+    anchor_bp: int       # 1-based position of the contact peak in the anchor (pixel-derived)
     after_px: int        # localised: insert after this original pixel (-1 otherwise)
     strand: str
-    cis: float
-    ratio: float
-    orient: float
-    cov: float
+    cis: float           # peak contact / adjacent expectation
+    ratio: float         # best anchor / next best anchor
+    orient: float        # stronger / weaker orientation score
+    cov: float           # median coverage ratio of the piece
     reason: str
 
 
 def _box(p, w):
+    """Moving mean of `p` over [i-w, i+w], shrinking the window at the ends."""
     cs = np.concatenate(([0.0], np.cumsum(p, dtype=np.float64)))
     n = len(p)
     lo = np.clip(np.arange(n) - w, 0, n)
@@ -66,7 +69,10 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
     the original map). With it, a piece is localised only at a junction with reduced
     contact (or a piece end): a junction with normal contact has no room for an insertion,
     and a piece that seems to belong there is more likely a copy of the sequence beside it.
-    Among such junctions near the contact peak the one with the clearest orientation wins."""
+    Among such junctions near the contact peak the one with the clearest orientation wins.
+
+    Candidates are scaffolds up to `max_px` px and `max_frac` of the longest; `only`
+    restricts them to a set of scaffold indices. Returns a list of Placement."""
     p = params or Params()
     sg = signal or Signal(pt)
     cov = sg.coverage_ratio()
@@ -87,20 +93,21 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
         anchor_px = npx[scaf] >= max(p.anchor_ratio * L, p.min_anchor_px)
         if not anchor_px.any():
             continue
-        S = sg.strip(a, a + L - 1).astype(np.float32)
-        prof = np.where(anchor_px, S.mean(0), 0.0)
+        S = sg.strip(a, a + L - 1).astype(np.float32)     # piece rows x all columns
+        prof = np.where(anchor_px, S.mean(0), 0.0)         # mean contact per column
         b = _box(prof, p.w_chrom)
-        b[~anchor_px] = 0
+        b[~anchor_px] = 0               # the box can spill past anchor ends; mask again
         c0 = int(np.argmax(b))
         A = int(scaf[c0])
         a0, a1 = int(pt.scaffold_start[A]), int(pt.scaffold_start[A] + npx[A] - 1)
         other = b.copy()
-        other[a0:a1 + 1] = 0
+        other[a0:a1 + 1] = 0            # best window on any *other* anchor
         ratio = float(b[c0] / max(other.max(), 1e-3))
         # position: sharpest small window near the broad peak
         lo, hi = max(a0, c0 - 2 * p.w_chrom), min(a1, c0 + 2 * p.w_chrom)
         b5 = _box(prof[a0:a1 + 1], p.w_loc)
         c = a0 + lo - a0 + int(np.argmax(b5[lo - a0:hi - a0 + 1]))
+        # expectation if the piece abutted the window: row i vs window column k is i+k px away
         d = np.arange(L)[:, None] + np.arange(1, 2 * p.w_loc + 2)[None, :]
         expect = float(g[np.minimum(d, len(g) - 1)].mean())
         cis = float(b5[c - a0] / expect)
@@ -116,9 +123,10 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
         if gap is not None:
             junc += (a0 + np.nonzero(gap[a0:a1] > 0)[0]).tolist()
         junc = np.array(sorted(set(junc)))
-        t = max(1, L // 3)
+        t = max(1, L // 3)              # rows taken as the piece's first / last third
 
         def orient_at(q):
+            """(plus, minus) contact scores for inserting the piece after pixel q."""
             left = S[:, max(a0, q - p.flank + 1):q + 1] if q >= a0 else None
             right = S[:, q + 1:min(a1, q + p.flank) + 1] if q < a1 else None
             plus = minus = 0.0     # '+': first pixels next to the left flank, last next to the right
@@ -132,6 +140,7 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
 
         no_room = False
         if junction_contact is None:
+            # junction q is the boundary q|q+1, hence the +0.5 when measuring to pixel c
             q = int(junc[np.argmin(np.abs(junc + 0.5 - c))])
             dist = abs(q + 0.5 - c)
         else:
@@ -141,7 +150,7 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
                 w = junction_contact[max(0, qq - 2):qq + 3]
                 if qq in (a0 - 1, a1) or (np.isfinite(w).any() and np.nanmin(w) < p.junction_max):
                     pl_, mi_ = orient_at(qq)
-                    cands.append((max(pl_, mi_) / max(min(pl_, mi_), 1e-3), qq))
+                    cands.append((max(pl_, mi_) / max(min(pl_, mi_), 1e-3), qq))   # (orient, q)
             if cands:
                 q, dist = max(cands)[1], 0.0
             else:
@@ -157,7 +166,7 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
             why.append("repeat-like coverage")
         if no_room:
             why.append("no junction with reduced contact near the peak")
-        elif dist > p.junction_tol + L / 2:
+        elif dist > p.junction_tol + L / 2:     # slack grows with piece length
             why.append("peak not at a gap or scaffold end")
         if orient < p.orient_min:
             why.append("orientation unclear")
@@ -171,6 +180,7 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
 
 
 def write_placements(rows, path):
+    """Write Placements as TSV (dataclass fields as columns, floats to 3 decimals)."""
     cols = list(asdict(rows[0])) if rows else []
     with open(path, "w") as f:
         f.write("\t".join(cols) + "\n")

@@ -5,12 +5,21 @@ import numpy as np
 
 
 class Signal:
+    """Contact statistics of one map (Pretext or SegmentedMap), cached per instance.
+
+    Distances and windows are in full-resolution pixels unless a method says bins.
+    Map values are PretextMap's normalised 8-bit intensities, so everything is judged
+    relative to the map's own distance-decay curve rather than in absolute counts.
+    """
+
     def __init__(self, pt, max_dist=200, big_px=400, cache=80):
+        """`max_dist`: decay length (px); `big_px`: min scaffold size (px) for the coverage
+        median; `cache`: decoded textures kept in memory (level 0, tex_res^2 bytes each)."""
         self.pt = pt
         self.max_dist = max_dist
         self._tex = functools.lru_cache(maxsize=cache)(pt.read_tex)
         self.big = pt.scaffold_npix[pt.orig_scaffold] > big_px      # pixels in large scaffolds
-        if not self.big.any():
+        if not self.big.any():          # tiny assemblies: fall back to every pixel
             self.big = np.ones(pt.npix, dtype=bool)
         self._decay = None
         self._long = {}
@@ -23,6 +32,8 @@ class Signal:
         if self._decay is None:
             pt, R, D = self.pt, self.pt.tex_res, self.max_dist
             tot, cnt = np.zeros(D), np.zeros(D)
+            # ~11 diagonal textures are a large enough sample and keep this fast; only pairs
+            # within one scaffold count, so assembly breaks do not drag the curve down
             for t in range(0, pt.n_tex, max(1, pt.n_tex // 11)):
                 m = self._tex(t, t).astype(np.float32)
                 o = pt.orig_scaffold[t * R:(t + 1) * R]
@@ -37,6 +48,8 @@ class Signal:
         """Expected mean of the best off-diagonal line for a piece of this length that is
         merely adjacent to the partner locus (not a copy of it), relative to distance 0."""
         g = self.decay
+        # abutting the partner end to end, the k-th pixel pair along the line lies 2k+1 px
+        # apart in the genome; distances beyond the curve use its last value
         idx = np.minimum(2 * np.arange(length) + 1, len(g) - 1)
         return float(g[idx].mean() / g[0])
 
@@ -49,7 +62,7 @@ class Signal:
             for ty in range(pt.n_tex):
                 if tx <= ty:
                     t = self._tex(tx, ty)[r0 - tx * R:r1 - tx * R + 1, :]
-                else:
+                else:           # lower triangle: read the mirrored texture, transposed
                     t = self._tex(ty, tx)[:, r0 - tx * R:r1 - tx * R + 1].T
                 out[r0 - a:r1 - a + 1, ty * R:(ty + 1) * R] = t
         return out
@@ -83,12 +96,14 @@ class Signal:
         pt, n, R = self.pt, self.pt.npix, self.pt.tex_res
         g = self.decay_long(2 * (w + skip) + 2)
         i = np.arange(w)
+        # row q-skip-i vs column q+1+skip+j are 2*skip+1+i+j px apart
         expect = g[(i[:, None] + i[None, :] + 1 + 2 * skip)].sum()
         out = np.full(n, np.nan)
         pad = w + skip
-        for s in range(0, n, R):
+        for s in range(0, n, R):        # one texture-wide stripe at a time, padded by `pad`
             lo, hi = max(0, s - pad), min(n - 1, s + R - 1 + pad)
             m = self.block(lo, hi, lo, hi).astype(np.float64)
+            # summed-area table: any w x w square sum in O(1)
             ii = np.zeros((m.shape[0] + 1, m.shape[1] + 1))
             ii[1:, 1:] = m.cumsum(0).cumsum(1)
             q = np.arange(max(s, pad - 1), min(s + R, n - pad))
@@ -111,10 +126,10 @@ class Signal:
         if key not in self._long:
             pt, R = self.pt, self.pt.tex_res
             tot, cnt = np.zeros(key), np.zeros(key)
-            for t in range(0, pt.n_tex, max(1, pt.n_tex // 11)):
+            for t in range(0, pt.n_tex, max(1, pt.n_tex // 11)):    # same sampling as decay
                 m = self._tex(t, t).astype(np.float32)
                 o = pt.orig_scaffold[t * R:(t + 1) * R]
-                for d in range(min(key, R)):
+                for d in range(min(key, R)):    # within one texture: d < tex_res, else 0
                     v = np.diagonal(m, d)[o[:R - d] == o[d:]]
                     tot[d] += v.sum()
                     cnt[d] += len(v)
@@ -137,6 +152,7 @@ class Signal:
         out = np.zeros((n, n), dtype=np.float32)
         for x in range(pt.n_tex):
             for y in range(x, pt.n_tex):
+                # read_tex directly, not the LRU cache: one pass over every texture
                 t = pt.read_tex(x, y).astype(np.float32).reshape(k, f, k, f).mean(axis=(1, 3))
                 out[x * k:(x + 1) * k, y * k:(y + 1) * k] = t
                 if x != y:
@@ -149,9 +165,10 @@ class Signal:
         Index b describes the boundary after bin b; NaN where the window leaves the scaffold."""
         M = self.binned(f).astype(np.float64)
         n = M.shape[0]
+        # scaffold of each bin = scaffold of its centre pixel
         sc = self.pt.orig_scaffold[np.minimum(np.arange(n) * f + f // 2, self.pt.npix - 1)]
         D = 2 * (w + skip) + 2
-        g = np.zeros(D)
+        g = np.zeros(D)                 # decay in bins, from the binned map itself (all of it)
         for d in range(D):
             v = np.diagonal(M, d)
             same = sc[:n - d] == sc[d:]
@@ -174,5 +191,6 @@ class Signal:
         cov = self.pt.graphs.get("coverage")
         if cov is None:
             return None
+        # median over large scaffolds: small ones are enriched in haplotigs and repeats
         norm = np.median(cov[self.big])
         return cov / norm if norm > 0 else None

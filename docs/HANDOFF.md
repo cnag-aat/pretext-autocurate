@@ -1,4 +1,4 @@
-# Handoff: state of pretext-autocurate (v1.0.0, updated 2026-11-14)
+# Handoff: state of pretext-autocurate (v1.1.0, updated 2026-11-14)
 
 Read this first, then `PLAN.md` section 0 (the curator's priorities and conventions; the
 rest of PLAN.md is the original plan and partly out of date), then the tail of
@@ -21,7 +21,9 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps.py` | `Level` (the one conservative-to-aggressive setting), `arrange_pieces` (order/orientation within a copy), and the allhaps pass: telomere sites (cut / invert_tip / keep), homolog pairing (Hi-C or sequence), same-prefix pairs, small scaffolds as unlocs (`place_small`), parallel layout, HAP tags |
 | `homology.py` | minimap2 between haplotypes (`align_haplotypes`) and of small scaffolds against everything (`align_small`), PAF reading, external tool lookup |
 | `busco.py` | BUSCO lineage (path or name, opt-in download), miniprot, gene counts per haplotype and scaffold |
-| `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` |
+| `tracks.py` | evidence tracks: bedgraph/BED or map tracks -> per-pixel arrays (`to_pixels`, `from_map`, `load`); runs telo_scan.py (`run_telo_scan`) and Red (`run_red`, Intel build under Rosetta); BUSCO duplicate-pair / missing-gene tracks (`busco_tracks`); map copies with tracks via PretextGraph (`add_tracks`) |
+| `vendor/telo_scan.py` | the curator's telomere scanner (cnag-aat/scripts 666994c), bundled unchanged apart from a provenance header |
+| `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` (mode detection, `--level` / `--sweep`, review table, run info, track options) |
 
 Order inside `curate_single`: misjoin cuts -> contig haplotigs (cut at gaps) -> weak
 junctions cut tentatively and kept only if pieces fit better elsewhere -> `SegmentedMap`
@@ -31,7 +33,7 @@ then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags
 ## How to run and check
 
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --map MAP.pretext --out-dir out
-    python3 -m unittest discover -s tests            # about 10 minutes; tests.test_allhaps alone about 5
+    python3 -m unittest discover -s tests            # about 12 minutes; tests.test_allhaps alone about 6
     ... run --mode allhaps --map MQ0 --map MQ10 --paf H2_vs_H1.paf --small-paf small_vs_all.paf --busco-table H1=... --busco-table H2=...
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
     python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
@@ -91,8 +93,8 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   (parallel, not an X), tag HAP1/HAP2, identify sex chromosomes if possible.
 - `--phasing none|hic|trio` controls haplotype reassignment: `trio` none at all; `hic` no
   mixing of `H1_`/`H2_` within a superscaffold but whole superscaffolds may swap (the
-  bird); `none` free mixing with HAP1 best and balanced. The flag exists in `run` but
-  **does nothing yet**.
+  bird), and small pieces may go to the other prefix's copy; `none` free mixing with HAP1
+  best and balanced. `trio` and `hic` are implemented; `none` currently behaves like `hic`.
 - A collapsed chromosome (low heterozygosity) has no partner: report it, do not force a pair.
 - One pass preferred. Pair homologs on MQ0; cuts/joins/placement within each haplotype on
   the high-MQ map at an adaptive resolution. A second pass (haploid maps, single mode) is
@@ -156,15 +158,84 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 
 ## Next, in the curator's order (2026-11-14)
 
-1. Red repeat mask as a map track (PretextGraph) and as evidence wherever sequence is
-   weighed.
-2. telo_scan.py (cnag-aat/scripts) for telomeres from `--fasta`, both strands.
+1. ~~Red repeat mask as a map track (PretextGraph) and as evidence wherever sequence is
+   weighed~~ done in 1.1.0: `--red`, `--repeats`, `--add-tracks`. On the owl Red changes no
+   decision (sequence evidence is already judged on unique alignments); it matters for
+   Hi-C-only placement and for display.
+2. ~~telo_scan.py (cnag-aat/scripts) for telomeres from `--fasta`, both strands~~ done in
+   1.1.0 and bundled (`--telomere-motif`).
 3. ~~Benchmark minimap2 against FASTGA~~ done 2026-11-14 (PROGRESS): FastGA needs over
    50 GB of free disk for its index on a 4.4 Gb assembly and gives no mapping quality.
    Curator's decision: stick with minimap2 (the tool runs on a MacBook).
-4. Read hapscotch (Chenxi Zhou) and compare approaches. The curator trusts the work of
+4. ~~Read hapscotch (Chenxi Zhou) and compare approaches~~ done: `docs/RELATED.md`. The curator trusts the work of
    Richard Durbin's group and of anyone who has worked with him: treat their methods as
    references to learn from.
+
+## Suggestions for further development (2026-11-14, after v1.1.0)
+
+Proposals, not curator decisions; roughly in order of expected value for curators. Items
+the curator has already asked for are marked (curator).
+
+Curation quality, two-haplotype mode
+1. **Contig outranks scaffold join** (curator). When the two copies disagree, take as
+   reference the copy whose sequence is contiguous (no gap) at that point, not the copy in
+   fewer pieces. Everything needed is at hand: alignment blocks that span a gap in one copy
+   land inside a contig of the other (`gap` track, `_block_index`). Decide per
+   disagreement in `_project`, and say which copy led in the decisions table.
+2. **Hemizygous and sex chromosomes from coverage** (curator). Chain half-coverage pieces
+   by end contact alone (they have no homolog to guide them; the Troglobisium X is five
+   pieces), find the boundary where a sex chromosome and an autosome are joined in one
+   scaffold (a step in the coverage track), and look at SCINKD / HalfDeep for labelling
+   X/Y or Z/W. Prefer FASTK if k-mers are needed.
+3. **Shared Hi-C backbone** (from hapscotch). Map the MQ0 contacts of both copies onto
+   one coordinate system through the alignment and decide joins and cuts on the sum. Twice
+   the signal; this matters most for MQ0-only maps such as Troglobisium.
+4. **Merges checked by alignment.** `merge_pairs` decides on end contact; when `--paf`
+   is given, require the two pairs to be colinear pieces of one homolog, as `_project`
+   already does for order.
+5. **Two haplotypes in one scaffold**: a scaffold that aligns to itself (an off-diagonal
+   line inside its own block at MQ0, plus a self-alignment) should be split and the halves
+   paired.
+6. **`--phasing none` as an optimisation** (from hapscotch): assign pieces to haplotypes
+   to minimise inter-haplotype contact within a chromosome; a principled way to decide
+   cases like owl H1_scaffold_31 / H1_scaffold_44, which now rest on fixed rules.
+7. **Small pieces** (under 4 px in allhaps, 15 px in single mode): read full-resolution
+   strips for them instead of the working mip level.
+8. **Contaminant tag**: on the high-MQ map with the repeat track, a scaffold with no
+   contact to anything, no homolog and no repeats is a contaminant candidate; tag it
+   rather than leave it unplaced and silent.
+
+Evidence
+9. **Unitig GFAs** (curator, hifiasm hap1/hap2): independent evidence for where a contig
+   is trustworthy. Needs a graph alignment (names differ from the assembly); minigraph or
+   GraphAligner are candidates.
+10. **FastGA on a cluster**: keep minimap2 as the default (curator), but accept a FastGA
+    PAF via `--paf` once the tool has its own uniqueness filter (best chain per query
+    stretch), since FastGA gives no mapping quality.
+11. **telo_scan threshold**: optionally drop windows below telo_scan's own score (100)
+    before PretextGraph; removes weak interstitial runs (measured on the owl, optional).
+
+Validation, so the rules keep improving
+12. **One scoring script over all fixtures** (`tools/score_all.py`): for every genome
+    with a curator savestate, run the tool at each level and report junction precision /
+    recall, cuts, pairs and tags against the curation, as a table to keep in PROGRESS.
+    Today the numbers come from separate tests and ad hoc runs.
+13. **More genomes from the team, especially hard taxa** (not vertebrates, not
+    butterflies): every corrected savestate (tool output + curator's edits) is a new
+    test. Ask curators to send `autocurate.run.txt` with it (README already says so).
+14. **AGP** checked against PretextView's own export (still unverified).
+
+Engineering
+15. **Split `allhaps.py`** (about 1,700 lines; `curate_allhaps` alone about 600): telomere
+    sites, small scaffolds, merging/arrangement and the driver into separate modules, each
+    step returning its rows. Easier to test step by step.
+16. **Tests that run without the fixtures**: a few small synthetic `.pretext` maps (or
+    pickled `SegmentedMap`s) so GitHub Actions can run on every push; keep the 12-minute
+    fixture suite for releases.
+17. **`--level` in single mode**: its thresholds are fixed; reading them through `Level`
+    would let a sweep cover both modes.
+18. **Packaging**: a bioconda recipe (with minimap2 and miniprot as dependencies), after
+    checking that bioconda accepts a noncommercial license; the Intel-only Red / PretextGraph stay optional.
 
 ## Known gaps, in rough priority
 
