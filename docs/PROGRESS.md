@@ -1304,3 +1304,12 @@ minimap2 for the haplotype alignments.
   37.8 Mb, H2_scaffold_4 45.4 Mb, H2_scaffold_6 37.75 Mb, all places the curator broke;
   H2_scaffold_17 0.47 Mb becomes a tip inversion (not a curator site). Against the final
   curation: 21 of 29 new junctions (was 22 of 32), 27 reproduced (unchanged).
+- Curator (2026-11-14) on H2_scaffold_2 5.1 Mb: invert it. "If a curator wants to change
+  it, then they have all the evidence explained before a decision is made." The tool
+  already does this with telo_scan tracks; without them it keeps the site and flags it.
+- telo_scan.py output in PretextGraph (tested on the owl MQ10 map): the names
+  `5p_telomere` / `3p_telomere` are recognised as the telomere type (extension type 5),
+  the same as `telomere`. The signal is sparse: 0.16% of pixels reach 10% of the maximum,
+  so peaks stand out without post-processing. PretextGraph itself keeps 185 of the 399
+  pixels that have any 3p window; dropping windows below telo_scan's own threshold (100)
+  leaves 126 and removes weak interstitial runs. Optional, not needed.

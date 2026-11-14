@@ -76,6 +76,9 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   threshold; new thresholds must be read through `allhaps.Level`. `--sweep` writes one
   savestate per level for the curator to choose from, so keep a level fast (shared caches).
 - Equal score inverted or not = probably heterozygous inversion: flag, do not edit.
+- When the evidence is clear (e.g. telomere strands), act and explain the evidence in the
+  decisions table; the curator can reverse it with everything in front of them (curator,
+  2026-11-14, on H2_scaffold_2).
 - Under `--phasing hic` large scaffolds never mix prefixes within a superscaffold, but a
   small piece (unloc) may go to the other prefix's copy. `trio`: no mixing at all.
 - Sex chromosomes: PAR is not a haplotig; in allhaps both X/Y (Z/W) go to HAP1.
