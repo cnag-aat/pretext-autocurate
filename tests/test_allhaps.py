@@ -329,8 +329,9 @@ class TestAllhapsSequence(unittest.TestCase):
         fd = {r["scaffold"] for r in rows if r["action"] == "false_duplicate"}
         self.assertTrue({"H2_scaffold_70", "H1_scaffold_209", "H2_scaffold_43"} <= fd, fd)
         # H1_scaffold_44 is not one (curator, 2026-11-14): a 1.7 Mb repeat array aligns loosely to both
-        # copies, but its 262 kb of non-repetitive sequence aligns to H2_scaffold_40 only. It is
-        # haplotypic: joined after H1_scaffold_36, reversed, parallel to the start of H2_scaffold_40.
+        # copies, but its 262 kb of non-repetitive sequence aligns to the start of H2_scaffold_40 only,
+        # at its own end. It continues H2_scaffold_40 and goes into the H2 superscaffold (more
+        # parsimonious than a segmental duplication in H1 against a deletion in H2).
         self.assertNotIn("H1_scaffold_44", fd)
         self.assertIn("H1_scaffold_44", joins)
         # H2_scaffold_34 (3.9 Mb) is large enough to be placed by end contact: joined in front of W
@@ -339,8 +340,11 @@ class TestAllhapsSequence(unittest.TestCase):
         # H1_scaffold_168 (0.5 Mb, in no pair) aligns to H2_scaffold_5 where H1_scaffold_6 has a gap with
         # no contact across and no sequence: it goes in there. Scaffolds that align where their own
         # copy already has sequence (H2_scaffold_43, H2_scaffold_70) are duplicates and stay out.
-        self.assertEqual(set(re), {"H2_scaffold_8", "H1_scaffold_6", "H1_scaffold_36"})
-        self.assertTrue(re["H1_scaffold_36"].startswith("new order: H1_scaffold_36 0.0-3.3 Mb, H1_scaffold_44 0.0-2.0 Mb reversed;"))
+        self.assertEqual(set(re), {"H2_scaffold_8", "H1_scaffold_6", "H2_scaffold_40"})
+        self.assertTrue(re["H2_scaffold_40"].startswith("new order: H1_scaffold_44 0.0-2.0 Mb, H2_scaffold_40 0.0-2.6 Mb;"))
+        # H1_scaffold_31: its homologs are both H1_ (H1_scaffold_33 / H1_scaffold_40); it goes to the
+        # shorter copy, which is tagged HAP2, to balance the haplotypes (curator, 2026-11-14)
+        self.assertEqual(un.get("H1_scaffold_31"), "H1_scaffold_40")
         why44 = [r["evidence"] for r in rows if r["scaffold"] == "H1_scaffold_44" and r["action"] == "join"][0]
         self.assertIn("non-repetitive sequence (262 kb", why44)
         self.assertIn("H1_scaffold_168 0.0-0.5 Mb", re["H1_scaffold_6"])
@@ -353,7 +357,7 @@ class TestAllhapsSequence(unittest.TestCase):
         # the curator's own placements (savestate_6) that have evidence, with the same copy; a small
         # piece may go to the other prefix's copy (curator, 2026-11-13)
         for s, copy in (("H2_scaffold_34", "H2_scaffold_8"), ("H2_scaffold_61", "H2_scaffold_5"),
-                        ("H2_scaffold_70", "H2_scaffold_30:2"), ("H1_scaffold_44", "H1_scaffold_36"),
+                        ("H2_scaffold_70", "H2_scaffold_30:2"), ("H1_scaffold_44", "H2_scaffold_40"),
                         ("H1_scaffold_209", "H2_scaffold_13")):
             self.assertEqual(un.get(s), copy, s)
         self.assertLessEqual(len(un), 20)

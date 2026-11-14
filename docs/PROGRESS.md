@@ -1176,3 +1176,32 @@ Done
   H1_scaffold_36, reversed, parallel to the start of H2_scaffold_40 (in the H1 copy: only
   H2_scaffold_40 has that sequence). 5 false duplicates remain. New: H1_scaffold_31
   (4.98 Mb, 972 kb non-repetitive) attached as Unloc to H1_scaffold_33.
+
+## 2026-11-14: H1_scaffold_44 into the H2 chain; H1_scaffold_31 to HAP2; v1.0
+
+Curator
+- H1_scaffold_44 belongs in the H2 superscaffold, next to H2_scaffold_40. This breaks the
+  Hi-C phasing rule, but hifiasm's Hi-C phasing is not perfect, and it is more
+  parsimonious to partition homologous sequence between the haplotypes than to have a
+  segmental duplication in one against a complete deletion in the other.
+- H1_scaffold_31 (hard even for the curator) seems to belong in HAP2, maybe as an unloc,
+  judging by repeat patterns and the balance of haplotype content.
+- Release a stable v1.0 for the team to pre-curate with; then Red mask, telo_scan.py,
+  minimap2 against FASTGA, and a comparison with hapscotch (Chenxi Zhou). The curator
+  trusts the work of Richard Durbin's group and anyone who has worked with him.
+
+Done
+- `place_small._extends`: a piece whose non-repetitive (dense) alignment lies at one of its
+  own ends and at an end of the one copy that has that sequence, with the strand that lets
+  it run on past that end, continues that copy: it is joined there (overlapping ends
+  meeting), whatever its prefix (not under `--phasing trio`). H1_scaffold_44: its last
+  262 kb overlaps the first 262 kb of H2_scaffold_40; laid out as H1_scaffold_44,
+  H2_scaffold_40 (the curator's layout reversed as a whole). Pieces whose match is inside
+  the copy still fill the hole in the other copy (H1_scaffold_168).
+- A small scaffold whose two homologs both carry its own prefix goes to the shorter copy
+  (balance). H1_scaffold_31 now attaches as Unloc to H1_scaffold_40, tagged HAP2.
+- v1.0.0: `--mode auto` (default; allhaps when two prefixes each hold a fifth of the
+  sequence), `--hap-regex`, `autocurate.review.tsv` (the items to look at, by importance),
+  `autocurate.run.txt` (version, command, options), clear errors, warnings for missing
+  tracks; README rewritten as a user guide; CHANGELOG.md.
+- Whole test suite: 57 tests pass (single mode included, first full run in two days).

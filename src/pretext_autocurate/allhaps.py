@@ -483,7 +483,8 @@ def _small_alignments(pt, small_blocks):
         if x is None or y is None or x == y:
             continue
         e = out.setdefault(x, {}).setdefault(y, [[], [], 0, 0, []])
-        e[4].append((bk.qs, bk.qe, bk.matches / max(bk.qe - bk.qs, 1)))     # with the density of matches
+        # with the density of matches, and where it lands in the target scaffold
+        e[4].append((bk.qs, bk.qe, bk.matches / max(bk.qe - bk.qs, 1), bk.t, bk.ts, bk.te, bk.same_strand))
         e[0].append((bk.qs, bk.qe))
         if bk.mapq >= 30:
             e[1].append((bk.qs, bk.qe))
@@ -559,7 +560,7 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         # A repeat array aligns loosely to every copy of the array, and how much of it each
         # haplotype assembled says nothing; where there is non-repetitive sequence the decision
         # rests on that alone (curator, 2026-11-14).
-        dense = [(a, b, d) for e in aln.get(u, {}).values() for a, b, d in e[4] if d >= dense_min]
+        dense = [(a, b, d) for e in aln.get(u, {}).values() for a, b, d, *_ in e[4] if d >= dense_min]
         D = sorted((a, b) for a, b, _ in dense)
         Ld = _union(D)
         if Ld >= max(50000, 0.1 * L) and Ld < 0.9 * L:
@@ -569,7 +570,7 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
                 return _union([(max(a, x), min(b, y)) for a, b in iv for x, y in D if min(b, y) > max(a, x)])
             for v, e in aln.get(u, {}).items():
                 if v in chrom:
-                    per.setdefault(chrom[v], {})[v] = [(a, b) for a, b, d in e[4] if d >= 0.7 * top]
+                    per.setdefault(chrom[v], {})[v] = [(a, b) for a, b, d, *_ in e[4] if d >= 0.7 * top]
             f = sorted(((within([i for iv in d.values() for i in iv]) / Ld, k) for k, d in per.items()), reverse=True)
             if f and f[0][0] > 0:
                 k = f[0][1]
@@ -584,6 +585,37 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
             k = f[0][1]
             seq[u] = (f[0][0], f[1][0] if len(f) > 1 else 0.0, k,
                       {v: _union(iv) / L for v, iv in per[k].items()})
+    raw_ = getattr(pt, "pt", pt)
+    ridx_ = {n: i for i, n in enumerate(raw_.names)}
+
+    def _extends(u, X):
+        """(X, end of X, end of u) if u's dense alignments to copy X lie at an end of X and at an
+        end of u, with the strand that makes u continue X beyond that end; else None."""
+        ents = [x for x in aln.get(u, {}).get(X, [[], [], 0, 0, []])[4]]
+        if not ents:
+            return None
+        top = max(d for e in aln.get(u, {}).values() for _, _, d, *_ in e[4])
+        ents = [x for x in ents if x[2] >= 0.7 * top and x[2] >= dense_min]
+        if not ents:
+            return None
+        L = npx[u] * bpp
+        q0, q1 = min(x[0] for x in ents), max(x[1] for x in ents)
+        tol_q = max(3 * bpp, 0.05 * L)
+        if q1 - q0 > 0.9 * L:
+            return None                                    # nothing of it reaches beyond the overlap
+        u_end = "h" if q0 <= tol_q else "t" if L - q1 <= tol_q else None
+        px = lambda name, bp: int(raw_.scaffold_start[ridx_[name]] + bp / bpp)
+        t0, t1 = min(px(x[3], x[4]) for x in ents), max(px(x[3], x[5]) for x in ents)
+        sX, eX = int(start[X]), int(start[X] + npx[X] - 1)
+        tol_x = max(3, int(0.03 * npx[X]))
+        x_end = "h" if t0 - sX <= tol_x else "t" if eX - t1 <= tol_x else None
+        if u_end is None or x_end is None:
+            return None
+        same = sum(x[1] - x[0] for x in ents if x[6]) >= 0.5 * sum(x[1] - x[0] for x in ents)
+        if same != (u_end != x_end):                       # the strand must let u run on past X's end
+            return None
+        return (X, x_end, u_end)
+
     need = [u for u in small if npx[u] >= hic_alone_px or (u in seq and seq[u][0] >= seq_min)]
     name = lambda k: "/".join(pt.names[v] for v in copies[k])
     cs = np.concatenate(([0.0], np.zeros(pt.npix)))
@@ -644,10 +676,26 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         own = [v for v in (a_, b_) if hap[v] == hap[u]]
         fr = s[3] if seq_ok else {}
         fa, fb = fr.get(a_, 0.0), fr.get(b_, 0.0)
-        how = ""
-        if main[k].kind == "unequal" or len(own) != 1:
-            # sex chromosomes, same-prefix pair: the copy with the evidence
+        how, ext = "", None
+        one_copy = seq_ok and max(fa, fb) >= seq_min and min(fa, fb) < 0.5 * seq_min
+        if one_copy and phasing != "trio" and main[k].kind != "unequal":
+            ext = _extends(u, a_ if fa > fb else b_)
+        if ext is not None:
+            # Its non-repetitive end overlaps an end of the one copy that has that sequence, and the
+            # rest of it reaches beyond: it continues that copy, whatever its prefix (curator,
+            # 2026-11-14: Hi-C phasing is not perfect; partitioning homologous sequence between the
+            # haplotypes is more parsimonious than a segmental duplication against a deletion).
+            copy = ext[0]
+            how = (f"its non-repetitive end overlaps the {'start' if ext[1] == 'h' else 'end'} of {pt.names[copy]}, the "
+                   "only copy with that sequence, and the rest of it reaches beyond: it continues that copy")
+        elif main[k].kind == "unequal" or len(own) == 0:
+            # sex chromosomes, or neither copy carries its prefix: the copy with the evidence
             copy = max((a_, b_), key=lambda v: (fr.get(v, 0.0), per0[v]))
+        elif len(own) == 2:
+            # both copies carry its prefix (homologs in one haplotype file): the shorter one, to
+            # balance the haplotypes (curator, 2026-11-14)
+            copy = a_ if npx[a_] < npx[b_] else b_
+            how = f"both copies carry its prefix; put with the shorter copy, {pt.names[copy]}, to balance the haplotypes"
         elif phasing == "trio" or not seq_ok:
             copy = own[0]
         elif max(fa, fb) >= seq_min and min(fa, fb) < 0.5 * seq_min:
@@ -686,7 +734,7 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         if third:
             why += ("; the sequence is present in both copies of the chromosome already: a third copy, "
                     "tagged FalseDuplicate")
-        out.append(dict(u=u, copy=copy, action=action, third_copy=third, evidence=why,
+        out.append(dict(u=u, copy=copy, action=action, third_copy=third, evidence=why, extend=ext,
                         score=round(100 * min(s[0], 1), 1) if seq_ok else round(r0, 1), ratio=round(r0, 1)))
     return out
 
@@ -1378,6 +1426,42 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             c = dict(u=v, copy=copy, action="unloc", third_copy=True, evidence=why, score="", ratio="")
             small_calls.append(c)
             attach.setdefault(copy, []).append(c)
+    # Pieces that continue a copy beyond one of its ends (see place_small): put next to that end,
+    # turned so that the overlapping ends meet.
+    for c in small_calls:
+        if not c.get("extend") or c["action"] != "unloc":
+            continue
+        v, (X, x_end, u_end) = c["u"], c["extend"]
+        H = host_of.get(X, X)
+        if H in arranged:
+            cur = list(arranged[H])
+        elif H in sol:
+            cur = [(a, b, r) for (a, b), (_, r) in zip(sol[H]["pieces"], sol[H]["init"])]
+        else:
+            cur = [(int(start_[H]), int(start_[H] + npx_[H] - 1), False)]
+        cur = [t for t in cur if t[0] != int(start_[v])]
+        end_px = int(start_[X]) if x_end == "h" else int(start_[X] + npx_[X] - 1)
+        k_ = next((i for i, (a, b, _) in enumerate(cur) if a <= end_px <= b), None)
+        if k_ is None:
+            continue
+        end_left = (x_end == "h") != cur[k_][2]            # that end of X is on the left of its piece as laid out
+        vr = (u_end == "h") if end_left else (u_end == "t")
+        cur.insert(k_ if end_left else k_ + 1, (int(start_[v]), int(start_[v] + npx_[v] - 1), vr))
+        arranged[H] = cur
+        joined[v] = H
+        c["action"] = "join"
+        c["join_note"] = f"placed next to that end of {pt.names[X]}" + (" (reversed)" if vr else "")
+        row = dict(action="rearrange", scaffold=pt.names[H], length_mb=round(npx_[H] * pt.bp_per_pix / 1e6, 2),
+                   partner="", strand="", tag="", score="", next_best="",
+                   evidence="new order: " + ", ".join(span(a, b) + (" reversed" if r else "") for a, b, r in cur)
+                            + f"; {pt.names[v]} continues {pt.names[X]} beyond its {'start' if x_end == 'h' else 'end'} "
+                              "(its non-repetitive end overlaps it; sequence alignment)")
+        old_rows = [i for i, r in enumerate(arr_rows) if r["action"] == "rearrange" and r["scaffold"] == pt.names[H]]
+        if old_rows:
+            row["evidence"] += "; replaces: " + arr_rows[old_rows[0]]["evidence"]
+            arr_rows[old_rows[0]] = row
+        else:
+            arr_rows.append(row)
     for c in small_calls:
         if c["u"] in joined:
             c["action"] = "join"
@@ -1405,7 +1489,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         rows.append(dict(action=act, scaffold=pt.names[c["u"]],
                          length_mb=round(npx[c["u"]] * pt.bp_per_pix / 1e6, 2), partner=pt.names[c["copy"]], strand="",
                          tag={"false_duplicate": "FalseDuplicate", "unloc": "Unloc"}.get(act, ""), score=c["score"], next_best="",
-                         evidence=c["evidence"] + ("; large enough to place by end contact: joined into the chromosome "
+                         evidence=c["evidence"] + ("; " + c["join_note"] if c.get("join_note") else
+                                                   "; large enough to place by end contact: joined into the chromosome "
                                                    "(see the rearrange row)" if c["action"] == "join" else "")))
     rows += arr_rows
     mb = lambda s: npx[s] * pt.bp_per_pix / 1e6

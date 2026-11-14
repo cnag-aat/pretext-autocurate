@@ -1,4 +1,4 @@
-"""Command line: info, dump, convert. (run and simulate come in later phases.)"""
+"""Command line: run (the pre-curation pass), info, dump, convert, haplotigs."""
 import argparse
 import collections
 import sys
@@ -94,15 +94,87 @@ def cmd_haplotigs(a):
           file=sys.stderr)
 
 
+# Decisions a curator should look at, by mode: everything else was applied with clear evidence.
+REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
+                  "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
+                  "sex_chromosome_candidate": "hemizygous chromosome", "pair_unequal": "possible sex chromosome pair",
+                  "place_next_to_homolog": "position along the homolog not resolved", "merge": "two pairs laid out as one chromosome",
+                  "false_duplicate": "tagged FalseDuplicate", "unpaired": "no homolog found"}
+
+
+def _write_review(rows, path, mode):
+    """The decisions that need a curator's eye, most important first, one line each."""
+    if mode == "allhaps":
+        sel = [(list(REVIEW_ALLHAPS).index(r["action"]), r) for r in rows if r["action"] in REVIEW_ALLHAPS
+               and not (r["action"] == "unpaired" and (r["length_mb"] == "" or float(r["length_mb"]) < 1.0))]
+        sel.sort(key=lambda x: x[0])
+        with open(path, "w") as f:
+            f.write("action\twhy_listed\tscaffold\tposition_or_length_mb\tpartner\tevidence\n")
+            for _, r in sel:
+                f.write(f"{r['action']}\t{REVIEW_ALLHAPS[r['action']]}\t{r['scaffold']}\t{r['length_mb']}\t{r['partner']}\t"
+                        f"{r['evidence']}\n")
+    else:
+        sel = [d for d in rows if d.confidence in ("low", "medium") or d.action.startswith("flag")]
+        sel.sort(key=lambda d: (d.confidence != "low", d.scaffold))
+        with open(path, "w") as f:
+            f.write("action\tconfidence\tscaffold\tlength_bp\ttarget\tevidence\n")
+            for d in sel:
+                f.write(f"{d.action}\t{d.confidence}\t{d.scaffold}\t{d.length_bp}\t{d.target}\t{d.evidence}\n")
+    return len(sel)
+
+
+def _write_run_info(a, path, mode, extra=""):
+    import datetime
+    import platform
+    with open(path, "w") as f:
+        f.write(f"pretext-autocurate {__version__}\n")
+        f.write(f"date\t{datetime.datetime.now().isoformat(timespec='seconds')}\n")
+        f.write(f"python\t{platform.python_version()}\n")
+        f.write(f"command\t{' '.join(sys.argv)}\n")
+        f.write(f"mode\t{mode}\n")
+        for k, v in sorted(vars(a).items()):
+            if k != "fn":
+                f.write(f"option\t{k}\t{v}\n")
+        f.write(extra)
+
+
+def _detect_mode(pt, hap_regex):
+    """allhaps if at least two haplotype prefixes each hold a fifth of the sequence."""
+    import re
+    lens = pt.scaffold_len_bp()
+    by = collections.Counter()
+    for n, l in zip(pt.names, lens):
+        m = re.match(hap_regex, n)
+        if m:
+            by[m.group(1)] += int(l)
+    big = [h for h, l in by.items() if l >= 0.2 * sum(lens)]
+    return ("allhaps" if len(big) >= 2 else "single"), sorted(by)
+
+
 def cmd_run(a):
     import os
     from .curate import curate_single, write_decisions
+    for m in a.map:
+        if not os.path.exists(m):
+            sys.exit(f"error: {m} not found")
     maps = [Pretext(m, load_graphs=(i == 0)) for i, m in enumerate(a.map)]
     try:
         check_same_layout(maps)
     except ValueError as e:
         sys.exit(f"error: {e}")
     pt = maps[0]
+    for g in ("gap", "coverage"):
+        if g not in pt.graphs:
+            print(f"warning: {a.map[0]} has no '{g}' track; calls that need it are weaker or skipped "
+                  "(add it with PretextGraph)", file=sys.stderr)
+    mode, prefixes = _detect_mode(pt, a.hap_regex)
+    if a.mode != "auto":
+        if a.mode == "allhaps" and mode != "allhaps":
+            sys.exit(f"error: --mode allhaps needs scaffold names with two haplotype prefixes matching {a.hap_regex!r} "
+                     f"(found: {', '.join(prefixes) or 'none'}); set --hap-regex or use --mode single")
+        mode = a.mode
+    print(f"mode: {mode}" + (f" (haplotype prefixes {', '.join(prefixes)})" if mode == "allhaps" else ""), file=sys.stderr)
+    a.mode = mode
     if a.mode == "allhaps":
         from .allhaps import curate_allhaps, write_rows
         blocks = small = None
@@ -129,7 +201,7 @@ def cmd_run(a):
                              "give the assembly the map was made from")
                 try:
                     paf = align_haplotypes(a.fasta, a.work_dir or os.path.join(a.out_dir, "work"), threads=a.threads,
-                                           minimap2=a.minimap2)
+                                           minimap2=a.minimap2, hap_regex=a.hap_regex)
                 except RuntimeError as e:
                     sys.exit(f"error: {e}")
             blocks = read_paf(paf, min_mapq=0)      # pairing uses mapq >= 30; the rest shows repeats
@@ -161,8 +233,11 @@ def cmd_run(a):
         levels = [float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
-            rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
-                                            busco_hits=hits, small_blocks=small, level=lv)
+            try:
+                rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
+                                                busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex)
+            except ValueError as e:
+                sys.exit(f"error: {e}")
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
             os.makedirs(out_dir, exist_ok=True)
             prefix = os.path.join(out_dir, a.prefix)
@@ -173,10 +248,11 @@ def cmd_run(a):
                 st.save(os.path.join(out_dir, name), m.path)
             n = collections.Counter(r["action"] for r in rows)
             summary.append((lv, n, len(st.edits)))
+            nrev = _write_review(rows, prefix + ".review.tsv", "allhaps")
+            _write_run_info(a, prefix + ".run.txt", "allhaps", f"level\t{lv}\n")
             print(f"level {lv:.2f}\t" + "\t".join(f"{k} {v}" for k, v in sorted(n.items())))
-            print(f"allhaps so far: cuts, pairing, order and orientation within a copy, tags, unlocs (no haplotig tags yet). "
-                  f"edits {len(st.edits)}, painted {len(st.scaffs)}, tags {len(st.meta_flags)}; outputs in {out_dir}",
-                  file=sys.stderr)
+            print(f"edits {len(st.edits)}, painted {len(st.scaffs)}, tags {len(st.meta_flags)}, waypoints {len(st.waypoints)}; "
+                  f"{nrev} items to review in {prefix}.review.tsv; outputs in {out_dir}", file=sys.stderr)
         if a.sweep:
             acts = sorted({k for _, n, _ in summary for k in n})
             with open(os.path.join(a.out_dir, a.prefix + ".sweep.tsv"), "w") as f:
@@ -194,9 +270,12 @@ def cmd_run(a):
     for m in maps:
         st.save(os.path.join(a.out_dir, os.path.basename(m.path) + ".savestate_autocurate"), m.path)
     n = collections.Counter(d.action for d in decisions)
+    nrev = _write_review(decisions, prefix + ".review.tsv", "single")
+    _write_run_info(a, prefix + ".run.txt", "single")
     print("\t".join(f"{k} {v}" for k, v in sorted(n.items())))
     print(f"edits {len(st.edits)}, painted contigs {len(st.scaffs)}, tags {len(st.meta_flags)}, "
-          f"waypoints {len(st.waypoints)}; outputs in {a.out_dir}", file=sys.stderr)
+          f"waypoints {len(st.waypoints)}; {nrev} items to review in {prefix}.review.tsv; outputs in {a.out_dir}",
+          file=sys.stderr)
 
 
 def main(argv=None):
@@ -226,9 +305,14 @@ def main(argv=None):
     p.add_argument("--cov-max", type=float, default=0.8, help="coverage ratio below this counts as reduced")
     p.add_argument("--line-excess", type=float, default=0.05)
     p.set_defaults(fn=cmd_haplotigs)
-    p = sub.add_parser("run", help="first curation pass: haplotigs + placement -> savestate, AGP, decisions")
-    p.add_argument("--map", action="append", required=True, help="first map (MQ0) is analysed; repeat for other maps of the same assembly")
-    p.add_argument("--mode", choices=["single", "allhaps"], default="single")
+    p = sub.add_parser("run", help="pre-curation pass -> savestate per map, decisions, review list, AGP")
+    p.add_argument("--map", action="append", required=True,
+                   help="the MQ0 map first (it is analysed); repeat for other maps of the same assembly (in allhaps mode "
+                        "the second is used as the high-MQ map); each gets its own savestate")
+    p.add_argument("--mode", choices=["auto", "single", "allhaps"], default="auto",
+                   help="auto (default): allhaps when scaffold names carry two haplotype prefixes (see --hap-regex)")
+    p.add_argument("--hap-regex", default=r"^(H\d+)_",
+                   help="regular expression whose first group is the haplotype prefix of a scaffold name [^(H\\d+)_]")
     p.add_argument("--out-dir", default=".")
     p.add_argument("--prefix", default="autocurate")
     p.add_argument("--phasing", choices=["none", "hic", "trio"], default="hic",

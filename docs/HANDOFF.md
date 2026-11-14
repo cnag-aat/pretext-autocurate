@@ -1,4 +1,4 @@
-# Handoff: state of pretext-autocurate (written 2026-11-13)
+# Handoff: state of pretext-autocurate (v1.0.0, updated 2026-11-14)
 
 Read this first, then `PLAN.md` section 0 (the curator's priorities and conventions; the
 rest of PLAN.md is the original plan and partly out of date), then the tail of
@@ -150,6 +150,17 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
   some ideas look similar. Read the code and compare approaches (homology between
   haplotypes as scaffolding evidence, how joins and switches are decided) before building
   more of the alignment-based steps here. Neither repository has been looked at yet.
+
+## Next, in the curator's order (2026-11-14)
+
+1. Red repeat mask as a map track (PretextGraph) and as evidence wherever sequence is
+   weighed.
+2. telo_scan.py (cnag-aat/scripts) for telomeres from `--fasta`, both strands.
+3. Benchmark minimap2 against FASTGA for the haplotype alignment (time, memory, aligned
+   fraction, effect on the calls), on the owl and Troglobisium.
+4. Read hapscotch (Chenxi Zhou) and compare approaches. The curator trusts the work of
+   Richard Durbin's group and of anyone who has worked with him: treat their methods as
+   references to learn from.
 
 ## Known gaps, in rough priority
 
