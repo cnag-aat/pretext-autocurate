@@ -116,6 +116,9 @@ haplotigs (off-diagonal line plus reduced coverage; borderline ones highlighted)
 | `--paf`, `--small-paf` | use existing alignments instead (H2 against H1, and small scaffolds against the whole assembly) |
 | `--busco-table H1=hap1.full_table.tsv --busco-table H2=hap2.full_table.tsv` | existing BUSCO results (one per haplotype, or one on the diploid assembly): tie-breaker for HAP1, false-duplication candidates. Never decisive alone |
 | `--busco-lineage`, `--miniprot-paf` | let the tool find BUSCO genes itself (slow) |
+| `--repeats BED`, `--red` | a repeat track (e.g. from Red); `--red` runs Red on each haplotype of `--fasta` (about 25 min for a 2.7 Gb assembly) |
+| `--telomere-motif`, `--telo-scan`, `--telomere-5p/3p` | telomeres by strand from telo_scan.py: tells two chromosome ends joined from an inverted end piece |
+| `--add-tracks` | write a copy of each map with these tracks and the BUSCO duplicate pairs / missing genes, for viewing in PretextView (needs PretextGraph) |
 | `--hap-regex` | how to read the haplotype from a scaffold name (default `^(H\d+)_`) |
 
 Run `pretext-autocurate run --help` for every option.

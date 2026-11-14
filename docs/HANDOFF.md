@@ -156,8 +156,9 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 1. Red repeat mask as a map track (PretextGraph) and as evidence wherever sequence is
    weighed.
 2. telo_scan.py (cnag-aat/scripts) for telomeres from `--fasta`, both strands.
-3. Benchmark minimap2 against FASTGA for the haplotype alignment (time, memory, aligned
-   fraction, effect on the calls), on the owl and Troglobisium.
+3. ~~Benchmark minimap2 against FASTGA~~ done 2026-11-14 (PROGRESS): FastGA needs over
+   50 GB of free disk for its index on a 4.4 Gb assembly and gives no mapping quality.
+   Curator's decision: stick with minimap2 (the tool runs on a MacBook).
 4. Read hapscotch (Chenxi Zhou) and compare approaches. The curator trusts the work of
    Richard Durbin's group and of anyone who has worked with him: treat their methods as
    references to learn from.

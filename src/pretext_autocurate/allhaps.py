@@ -395,6 +395,25 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
     D = 40
     g = np.array([np.diagonal(M, d)[scb[:nb - d] == scb[d:]].mean() for d in range(D)])
     gh = sgh.decay_long(400)
+    t5, t3 = pt.graphs.get("telomere_5p"), pt.graphs.get("telomere_3p")
+    from .tracks import telomere_threshold
+    thr_s = telomere_threshold(t5 + t3) if t5 is not None and t3 is not None else None
+
+    def strand_at(q, tip_right):
+        """With telomere strand tracks: which side of the gap carries a telomere facing it.
+        A chromosome's right end reads the motif forward (3p), its left end reverse (5p), so
+        a 3p peak just left of the gap and/or a 5p peak just right of it face the gap.
+        Returns 'both', 'tip' (only the end piece), 'body' (only the long side) or None."""
+        if thr_s is None:
+            return None
+        l3 = float(t3[max(0, q - near_px):q + 1].max()) >= thr_s
+        r5 = float(t5[q + 1:q + 2 + near_px].max()) >= thr_s
+        if l3 and r5:
+            return "both"
+        if not (l3 or r5):
+            return None
+        left_side = l3                          # the facing telomere is on the left of the gap
+        return "tip" if left_side != tip_right else "body"
     out = []
     for q, (s, why) in sorted(sites.items()):
         a, n = int(pt.scaffold_start[s]), int(pt.scaffold_npix[s])
@@ -411,9 +430,15 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
             B = M[np.ix_(rows, cols)]
             ex = g[np.minimum(cols[None, :] - rows[:, None], D - 1)]
             broad = float((B.mean() - bg) / max(ex.mean() - bg, 1e-6))
+        strand = strand_at(q, tip_right)
         if ml is not None and mr is not None and parent(ml) != parent(mr):
             action = "cut"
             why += f"; the two sides have different homologs ({vt.names[ml]} and {vt.names[mr]}): two chromosomes joined"
+        elif strand in ("both", "body"):
+            action = "cut"
+            why += ("; telomeres on both sides face the gap: two chromosome ends joined" if strand == "both" else
+                    "; the telomere on the long side faces the gap: that side ends a chromosome, the end piece "
+                    "belongs elsewhere") + " (telomere strand tracks)"
         elif not np.isfinite(broad) and site_c.get(q, contact(q)) < tip_max:
             action = "cut"
             why += ("; one side is too short to measure chromosome-level contact with the other, and contact across "
@@ -433,7 +458,11 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
             as_is = float(sgh.block(body[0], body[1], near_w[0], near_w[1]).mean() / ex)
             inv = float(sgh.block(body[0], body[1], far_w[0], far_w[1]).mean() / ex)
             why += f"; the sides share chromosome-level contact ({broad:.2f}): same chromosome"
-            if inv >= invert_min * max(as_is, 1e-3) and (tip[1] - tip[0] + 1) <= 0.4 * n:
+            if strand == "tip" and (tip[1] - tip[0] + 1) <= 0.4 * n:
+                action = "invert_tip"
+                why += ("; the end piece's telomere faces the gap (telomere strand tracks): inverted, it ends the "
+                        f"chromosome (contact: inverted {inv:.2f}, as assembled {as_is:.2f}, {which})")
+            elif inv >= invert_min * max(as_is, 1e-3) and (tip[1] - tip[0] + 1) <= 0.4 * n:
                 action = "invert_tip"
                 why += (f"; the end piece fits better inverted ({inv:.2f} against {as_is:.2f} as assembled, {which}), "
                         "which also puts the telomere at the scaffold end")
@@ -521,7 +550,7 @@ def same_prefix_pairs(pt, info, small_blocks, min_bp=500000, frac_min=0.5):
 
 
 def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_margin=2.0, hic_agree=1.5,
-                hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5, dense_min=0.5,
+                hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5, dense_min=0.5, repeat_frac=0.9,
                 phasing="hic", copy_margin=1.5, cis_frac=0.2):
     """Which chromosome each remaining small scaffold belongs to.
 
@@ -631,6 +660,7 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
 
     sg0 = _signal(pt)
     sgh = _signal(hi) if hi is not None else None
+    rept = pt.graphs.get("repeat")
     covg, covn = pt.graphs.get("coverage"), None
     if covg is not None:
         largest = npx[pt.orig_scaffold] >= 0.2 * npx.max()
@@ -667,6 +697,14 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
                 why = f"Hi-C alone: MQ0 contact with the chromosome {name(k)} is {r0:.1f}x the next chromosome{extra}"
         if action is None:
             continue
+        if action == "unloc" and rept is not None and not seq_ok:
+            # Hi-C alone on a scaffold that is nearly all repeat: its contacts may come from the
+            # repeat's other copies. With sequence evidence the decision already rests on its unique
+            # (non-repetitive) alignments, and repeat content does not count (curator, 2026-11-14).
+            rf = float(rept[start[u]:start[u] + npx[u]].mean())
+            if rf >= repeat_frac:
+                action = "candidate"
+                why += f"; but {100 * rf:.0f}% of it is repeat (repeat track) and only Hi-C places it: not moved"
         if action == "unloc" and covn is not None:
             cv = float(np.median(covn[start[u]:start[u] + npx[u]]))
             if cv >= repeat_cov:
@@ -790,7 +828,7 @@ def _homolog_dir(sg, a, b, cols, max_rows=120, k=6):
     return d
 
 
-def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000):
+def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repeat_max=0.8):
     """Places where the alignment to the other haplotype stops being colinear: between two
     consecutive long alignments of a scaffold the other side changes scaffold, strand, or
     jumps. Returns [(pixel, kind, text for the left side, text for the right side)].
@@ -807,6 +845,7 @@ def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000):
             by.setdefault(bk.t, []).append((bk.ts, bk.te, bk.q, bk.qs, bk.qe, bk.same_strand))
     txt = lambda x: f"{x[2]} {x[3] / 1e6:.2f}-{x[4] / 1e6:.2f} Mb {'+' if x[5] else '-'}"
     lens = dict(zip(raw.names, raw.scaffold_len_bp().tolist()))
+    rep = raw.graphs.get("repeat")
     out = []
     for name, L in by.items():
         i = ix.get(name)
@@ -834,6 +873,8 @@ def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000):
                     continue
                 kind = "the two sides align to distant places"
             q = int(raw.scaffold_start[i] + min((A[1] + B[0]) / 2 / bpp, raw.scaffold_npix[i] - 1))
+            if rep is not None and float(rep[max(0, q - 2):q + 3].mean()) >= repeat_max:
+                continue                                    # inside a repeat: alignments end there anyway
             out.append((q, kind, txt(A), txt(B)))
     return out
 

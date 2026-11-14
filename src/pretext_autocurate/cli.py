@@ -151,6 +151,75 @@ def _detect_mode(pt, hap_regex):
     return ("allhaps" if len(big) >= 2 else "single"), sorted(by)
 
 
+def _load_tracks(a, pt):
+    """Telomere strand and repeat tracks: from the map, from files, or computed from --fasta."""
+    import os
+    from . import tracks
+    files = {"telomere_5p": a.telomere_5p, "telomere_3p": a.telomere_3p, "repeat": a.repeats}
+    work = a.work_dir or os.path.join(a.out_dir, "work")
+    try:
+        if a.telomere_motif and not (a.telomere_5p and a.telomere_3p):
+            if not a.fasta:
+                sys.exit("error: --telomere-motif needs --fasta (or give --telomere-5p/--telomere-3p)")
+            print(f"telomeres: running telo_scan.py for {a.telomere_motif} (cached in {work})", file=sys.stderr)
+            files.update(tracks.run_telo_scan(a.fasta, work, a.telomere_motif, a.telo_scan, a.threads))
+        if a.red and not a.repeats:
+            if not a.fasta:
+                sys.exit("error: --red needs --fasta (or give --repeats BED)")
+            print(f"repeats: running Red on each haplotype (cached in {work})", file=sys.stderr)
+            files["repeat"] = tracks.run_red(a.fasta, work, a.hap_regex)
+    except (RuntimeError, OSError) as e:
+        sys.exit(f"error: {e}")
+    except Exception as e:                                  # an external tool failed: say which
+        sys.exit(f"error: {e}")
+    a.track_files = {k: v for k, v in files.items() if v}
+    got = tracks.load(pt, files)
+    for k, src in sorted(got.items()):
+        print(f"track {k}: from {src}", file=sys.stderr)
+    for k, path in files.items():
+        if path and k not in got:
+            print(f"warning: no sequence name in {path} matches the map; track {k} not used", file=sys.stderr)
+    if any(src != "map" for src in got.values()) and not a.add_tracks:
+        names = {"telomere_5p": "5p_telomere", "telomere_3p": "3p_telomere", "repeat": "repeat_density"}
+        print("to see these tracks in PretextView, add them to a copy of the map with PretextGraph, e.g.\n  PretextGraph -i "
+              + a.map[0] + " -o with_tracks.pretext "
+              + " ".join(f"-t{i + 1} {p} -n{i + 1} {names[k]}" for i, (k, p) in enumerate(
+                  (k, p) for k, p in files.items() if p and k in got)), file=sys.stderr)
+
+
+def _with_tracks(a, hits):
+    """--add-tracks: a copy of every map with the evidence tracks, for PretextView. Returns the
+    paths written; the caller saves a savestate for each of them too."""
+    import os
+    import re
+    from . import tracks
+    if not a.add_tracks:
+        return []
+    names = {"telomere_5p": "5p_telomere", "telomere_3p": "3p_telomere", "repeat": "repeat_density"}
+    files = {names[k]: v for k, v in getattr(a, "track_files", {}).items() if k in names}
+    if hits:
+        hap_of = lambda n: (re.match(a.hap_regex, n).group(1) if re.match(a.hap_regex, n) else "")
+        files.update(tracks.busco_tracks(hits, hap_of, os.path.join(a.out_dir, "tracks")))
+    if not files:
+        print("warning: --add-tracks: no tracks to add (give --repeats/--red, --telomere-*, or BUSCO)", file=sys.stderr)
+        return []
+    made = []
+    for m in a.map:                      # every map: on a high-MQ map a repeat track tells repeat from contaminant
+        base = os.path.basename(m)
+        out = os.path.join(a.out_dir, (base[:-len(".pretext")] if base.endswith(".pretext") else base) + ".tracks.pretext")
+        try:
+            tracks.add_tracks(m, files, out)
+        except (RuntimeError, OSError) as e:
+            print(f"warning: --add-tracks failed for {m}: {e}", file=sys.stderr)
+            continue
+        except Exception as e:
+            print(f"warning: --add-tracks failed for {m}: {e} (see {out}.pretextgraph.log)", file=sys.stderr)
+            continue
+        print(f"map with tracks ({', '.join(files)}): {out}", file=sys.stderr)
+        made.append(out)
+    return made
+
+
 def cmd_run(a):
     import os
     from .curate import curate_single, write_decisions
@@ -175,6 +244,7 @@ def cmd_run(a):
         mode = a.mode
     print(f"mode: {mode}" + (f" (haplotype prefixes {', '.join(prefixes)})" if mode == "allhaps" else ""), file=sys.stderr)
     a.mode = mode
+    _load_tracks(a, pt)
     if a.mode == "allhaps":
         from .allhaps import curate_allhaps, write_rows
         blocks = small = None
@@ -230,6 +300,7 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             hits = busco.read_hits(mp)
             print(f"BUSCO: complete hits for {len(hits)} genes from {mp}", file=sys.stderr)
+        tracked = _with_tracks(a, hits)
         levels = [float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
@@ -243,9 +314,9 @@ def cmd_run(a):
             prefix = os.path.join(out_dir, a.prefix)
             write_rows(rows, prefix + ".decisions.tsv")
             write_agp(build_layout(pt, st), prefix + ".agp")
-            for m in maps:
-                name = os.path.basename(m.path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
-                st.save(os.path.join(out_dir, name), m.path)
+            for path in [m.path for m in maps] + tracked:
+                name = os.path.basename(path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
+                st.save(os.path.join(out_dir, name), path)
             n = collections.Counter(r["action"] for r in rows)
             summary.append((lv, n, len(st.edits)))
             nrev = _write_review(rows, prefix + ".review.tsv", "allhaps")
@@ -267,8 +338,9 @@ def cmd_run(a):
     write_decisions(decisions, prefix + ".decisions.tsv")
     pieces = build_layout(pt, st)
     write_agp(pieces, prefix + ".agp")
-    for m in maps:
-        st.save(os.path.join(a.out_dir, os.path.basename(m.path) + ".savestate_autocurate"), m.path)
+    tracked = _with_tracks(a, None)
+    for path in [m.path for m in maps] + tracked:
+        st.save(os.path.join(a.out_dir, os.path.basename(path) + ".savestate_autocurate"), path)
     n = collections.Counter(d.action for d in decisions)
     nrev = _write_review(decisions, prefix + ".review.tsv", "single")
     _write_run_info(a, prefix + ".run.txt", "single")
@@ -323,6 +395,17 @@ def main(argv=None):
                         "(aggressive); moves every act-or-flag threshold together [0.5]")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
+    p.add_argument("--telomere-motif", help="run telo_scan.py on --fasta for this motif (e.g. TTAGGG, TTAGG) and use "
+                                            "telomeres by strand; needs --telo-scan or telo_scan.py on PATH")
+    p.add_argument("--telo-scan", help="path to telo_scan.py (https://github.com/cnag-aat/scripts)")
+    p.add_argument("--telomere-5p", help="existing telo_scan.py 5p_telomere bedgraph (with --telomere-3p)")
+    p.add_argument("--telomere-3p", help="existing telo_scan.py 3p_telomere bedgraph (with --telomere-5p)")
+    p.add_argument("--repeats", help="repeat intervals (BED: name, start, end), e.g. from Red")
+    p.add_argument("--red", action="store_true", help="run Red on --fasta (each haplotype) for a repeat track")
+    p.add_argument("--add-tracks", action="store_true",
+                   help="also write a copy of each map with the evidence tracks (repeats, telomeres by strand, "
+                        "BUSCO duplicate pairs and genes missing from one haplotype) for PretextView, with its own "
+                        "savestate; needs PretextGraph")
     p.add_argument("--fasta", help="allhaps: the assembly the maps were made from (plain or .gz); "
                                    "haplotypes are aligned with minimap2 and homology is read from that")
     p.add_argument("--paf", help="allhaps: an existing alignment between haplotypes, used in place of --fasta")

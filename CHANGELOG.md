@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Telomeres by strand: `--telomere-motif` runs telo_scan.py (CNAG) on `--fasta`
+  (`--telo-scan PATH`), or give its bedgraphs with `--telomere-5p` / `--telomere-3p`, or
+  carry them in the map as `5p_telomere` / `3p_telomere` tracks. At a gap: telomeres facing
+  the gap from both sides, or from the long side, mean two chromosome ends (cut); from the
+  end piece only, an inverted end piece.
+- Repeats: `--repeats BED`, `--red` (runs Red on each haplotype of `--fasta`), or a
+  `repeat_density` track in the map. Alignment breaks inside repeats are ignored; a small
+  scaffold that is 90% repeat is not moved. The tool prints the PretextGraph command to add
+  computed tracks to a copy of the map.
+- `--add-tracks`: writes a copy of each map with the evidence tracks for PretextView
+  (repeat_density, 5p/3p_telomere, busco_dup_pairs, busco_missing_hap) and a savestate for
+  each copy. Useful on the high-MQ map too, where a repeat track tells repeat from
+  contaminant. BUSCO duplicate pairs share a colour per pair of scaffolds (both places of a
+  possible haplotig); genes missing from one haplotype are shown where the other has them.
+  Needs PretextGraph.
+- The repeat track blocks only placements that rest on Hi-C alone; with sequence evidence
+  the decision rests on unique alignments and repeat content does not count.
+- `tools/bench_aligners.py`: minimap2 against FASTGA for the haplotype alignment.
+- `docs/RELATED.md`: hapscotch (Chenxi Zhou) read and compared.
+
 ## 1.0.1 (2026-11-14)
 
 - License: PolyForm Noncommercial License 1.0.0 (`LICENSE.md`). Free for noncommercial use,

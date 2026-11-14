@@ -1205,3 +1205,77 @@ Done
   `autocurate.run.txt` (version, command, options), clear errors, warnings for missing
   tracks; README rewritten as a user guide; CHANGELOG.md.
 - Whole test suite: 57 tests pass (single mode included, first full run in two days).
+
+## 2026-11-14: tracks (telomere strands, repeats); minimap2 against FASTGA; hapscotch
+
+Installed (conda): FASTGA 1.5.20260729 into `pretext-autocurate` (native arm64); Red
+2015.05.22 and PretextGraph 0.1.0 into a new env `pretext-autocurate-x86` (bioconda has
+them for Intel Macs only; they run under Rosetta).
+
+Tracks (`tracks.py`)
+- Bedgraph / BED files or map tracks become per-pixel arrays: `telomere_5p`,
+  `telomere_3p` (and their sum as `telomere`), `repeat` (fraction of each pixel).
+- telo_scan.py labels strands empirically: 5p = the strand enriched at scaffold starts,
+  3p = at scaffold ends. Rule at a telomere site: 3p just left of the gap and 5p just right
+  (both facing it) = two chromosome ends joined, cut; only the long side facing it = cut;
+  only the end piece facing it = invert the end piece. Tested on the owl's H1_scaffold_2
+  site with artificial peaks (`tests/test_tracks.py`).
+- Repeat track: alignment breaks inside repeats (80% of the pixels around) are ignored;
+  a small scaffold 90% repeat is not moved.
+- CLI: `--telomere-motif` (runs telo_scan.py from `--telo-scan PATH`), `--telomere-5p`,
+  `--telomere-3p`, `--repeats BED`, `--red`. The tool prints the PretextGraph command for
+  adding computed tracks to a copy of the map.
+- Not run here: telo_scan.py itself. Executing the downloaded script was refused by this
+  session's permission settings; the curator can run it (or allow it). Its arguments and
+  output names were checked against its source.
+
+minimap2 against FASTGA on the owl (H2 against H1, 8 threads, this Mac)
+| | wall | peak memory | records | aligned | in records >= 10 kb |
+|---|---|---|---|---|---|
+| minimap2 asm5 | 2.1 min | 8.1 GB | 25,772 | 1,260 Mb | 1,203 Mb |
+| FastGA, PAF | 6.6 min | 4.8 GB | 400,618 | 16,364 Mb | 15,493 Mb |
+| FastGA .1aln + ALNchain | 5.7 min + 2 s | 4.8 GB | 32,172 | 1,696 Mb | 1,617 Mb |
+- FastGA reports every local alignment (repeats many times over) and no mapping quality
+  (always 255). Chained (as hapscotch does for its plots) it is comparable in size.
+- Calls on the owl with each alignment (map + PAF, nothing else): cuts, tip inversions,
+  kept sites and the main pairs identical. With FastGA: 3 more small pairs and an extra
+  unequal pair, 32 false duplicates instead of 2, 11 joins instead of 2. All from repeats:
+  with no mapq the tool's uniqueness filter (mapq >= 30) passes everything.
+- Troglobisium (2.2 Gb per haplotype): FastGA aborted after 4.3 min when the disk filled.
+  Its k-mer index (FastK tables) for one haplotype alone was 25 GB; both plus temporary
+  files need over 50 GB of free disk, which this Mac does not have. minimap2 needed 94 min
+  and 10 GB of memory but little disk. On a cluster with scratch space FastGA is likely the
+  faster of the two for large genomes; not measured here.
+- To use FastGA, the tool needs its own uniqueness filter (e.g. best chain per stretch of
+  the query, or drop stretches aligned to more than one place), or hapscotch's approach.
+
+hapscotch: read and compared in `docs/RELATED.md` (all-against-all FastGA, synteny groups,
+MILP phasing against inter-haplotype Hi-C, a shared Hi-C backbone per group, hapcount,
+palindrome correction).
+
+Curator's decision (2026-11-14): FastGA will not work on the curator's MacBook; stay with
+minimap2 for the haplotype alignments.
+
+## 2026-11-14: Red on the owl; v1.0.1, license, repository moved
+
+- Released: v1.0.0 (main, tag), then v1.0.1 = the same code under the PolyForm
+  Noncommercial License 1.0.0 with a CNAG notice (commercial use needs a license from
+  CNAG). The repository moved to https://github.com/cnag-aat/pretext-autocurate (private).
+- Red on the owl, each haplotype separately: 23.5 min, 8.3 GB peak, 706 Mb of 2.7 Gb
+  called repeat (26%). `run_red` now deletes its per-haplotype FASTA copies afterwards.
+- First run with the track changed four placements: H1_scaffold_44, H1_scaffold_31,
+  H1_scaffold_310 and H2_scaffold_61 fell back to candidates because they are 90% repeat.
+  Wrong by the curator's rule (repeat content must not decide; judge the non-repetitive
+  part). The repeat guard now applies only when Hi-C alone places a scaffold. With that,
+  the owl output with and without Red is identical: the track adds no decision on the owl,
+  and is mainly for display (PretextGraph `repeat_density`) and the Hi-C-only cases.
+- `CLAUDE.md`: always run commands under bash, not zsh (curator, 2026-11-14).
+- `--add-tracks` (curator: Red may be redundant for decisions but the tracks are worth
+  seeing; on a high-MQ map a repeat track tells repeat from contaminant; of BUSCO only the
+  genes missing in one haplotype and the duplicates are worth showing, paired so the
+  curator can tag a haplotig): a copy of each map with `repeat_density`, `5p_telomere`,
+  `3p_telomere`, `busco_dup_pairs` (label per pair of scaffolds: d1, d2 ...) and
+  `busco_missing_hap`, via PretextGraph. Owl: d1 H1_scaffold_14 / H1_scaffold_192 (9
+  genes), d2 H2_scaffold_3 / H2_scaffold_43 (5), d3 H1_scaffold_12 / H1_scaffold_209 (4),
+  d4 within H2_scaffold_1 (2); 188 gene copies missing from the other haplotype. The copies
+  keep the header hash, so the same savestate loads on both. 60 tests pass.
