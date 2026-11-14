@@ -132,6 +132,12 @@ savestates are the best way to improve the rules.
     pretext-autocurate dump STATE --map MAP.pretext     # a savestate in readable form
     pretext-autocurate convert --map MAP --state STATE --to agp|tsv|state --out FILE
 
+## License
+
+Free for noncommercial use, including by universities and public research institutes:
+[PolyForm Noncommercial License 1.0.0](LICENSE.md). Commercial use requires a license from
+CNAG (https://www.cnag.eu); see [NOTICE](NOTICE).
+
 ## Development
 
     python3 -m unittest discover -s tests

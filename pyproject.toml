@@ -7,6 +7,7 @@ name = "pretext-autocurate"
 version = "1.0.0"
 description = "Automatic first-pass curation of Hi-C contact maps from PretextMap files"
 requires-python = ">=3.10"
+license = {text = "PolyForm-Noncommercial-1.0.0"}
 dependencies = ["numpy>=1.24"]
 
 [project.scripts]
