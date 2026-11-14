@@ -1,26 +1,33 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 (2026-11-14)
 
-- Telomeres by strand: `--telomere-motif` runs telo_scan.py (CNAG; bundled in
-  `pretext_autocurate/vendor/`, `--telo-scan PATH` to use another copy) on `--fasta`, or give its bedgraphs with `--telomere-5p` / `--telomere-3p`, or
-  carry them in the map as `5p_telomere` / `3p_telomere` tracks. At a gap: telomeres facing
-  the gap from both sides, or from the long side, mean two chromosome ends (cut); from the
-  end piece only, an inverted end piece.
+Evidence tracks: telomeres by strand, repeats, BUSCO pairs.
+
+- Telomeres by strand from telo_scan.py (CNAG), now bundled in `pretext_autocurate/vendor/`:
+  `--telomere-motif MOTIF` with `--fasta` runs it (a few minutes for a 4 Gb assembly);
+  `--telomere-5p` / `--telomere-3p` take existing telo_scan bedgraphs; maps that already
+  carry its `5p_telomere` / `3p_telomere` tracks are read directly. At a gap: telomeres
+  facing it from both sides, or from the long side, mean two chromosome ends joined (cut);
+  from the end piece only, an inverted end piece (inverted, with the evidence in the
+  decisions table). The check includes the gap's own pixel, since telomeres are shorter
+  than a bin.
 - Repeats: `--repeats BED`, `--red` (runs Red on each haplotype of `--fasta`), or a
-  `repeat_density` track in the map. Alignment breaks inside repeats are ignored; a small
-  scaffold that is 90% repeat is not moved. The tool prints the PretextGraph command to add
-  computed tracks to a copy of the map.
-- `--add-tracks`: writes a copy of each map with the evidence tracks for PretextView
-  (repeat_density, 5p/3p_telomere, busco_dup_pairs, busco_missing_hap) and a savestate for
-  each copy. Useful on the high-MQ map too, where a repeat track tells repeat from
-  contaminant. BUSCO duplicate pairs share a colour per pair of scaffolds (both places of a
-  possible haplotig); genes missing from one haplotype are shown where the other has them.
-  Needs PretextGraph.
-- The repeat track blocks only placements that rest on Hi-C alone; with sequence evidence
+  `repeat_density` track in the map. Alignment breaks inside repeats are ignored; a
+  scaffold placed by Hi-C alone is not moved when it is 90% repeat. With sequence evidence
   the decision rests on unique alignments and repeat content does not count.
-- `tools/bench_aligners.py`: minimap2 against FASTGA for the haplotype alignment.
-- `docs/RELATED.md`: hapscotch (Chenxi Zhou) read and compared.
+- `--add-tracks`: a copy of each map with the evidence tracks for PretextView
+  (`5p_telomere`, `3p_telomere`, `repeat_density`, `busco_dup_pairs`, `busco_missing_hap`)
+  and a savestate for each copy (needs PretextGraph). On a high-MQ map a repeat track tells
+  repeat from contaminant. BUSCO duplicate pairs share one colour per pair of scaffolds, so
+  both places of a possible haplotig light up together; genes missing from one haplotype
+  are shown where the other has them.
+- Results on the test genomes: on the boreal owl the strands confirm the scaffold_1 cut and
+  the H1_scaffold_2 tip, and invert the end pieces of H1_scaffold_5 (as in the original
+  curation) and H2_scaffold_2; on Troglobisium (TTAGG) four flagged sites become cuts, all
+  at places the curator broke.
+- Tools and notes: `tools/bench_aligners.py` (minimap2 against FastGA; minimap2 stays the
+  aligner), `docs/RELATED.md` (hapscotch), `CLAUDE.md` (run commands under bash).
 
 ## 1.0.1 (2026-11-14)
 
