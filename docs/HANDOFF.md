@@ -130,6 +130,16 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
   point is the reference (not yet implemented: the reference is the copy in fewer pieces).
   For a future version the curator can provide the hifiasm unitig GFAs of hap1 and hap2;
   sequence names differ from the assembly, so matching needs a graph alignment.
+- **Repeats** (curator, 2026-11-14). Repetitive sequence is already "duplicated"
+  sequence: variable amounts of an array in the two haplotypes should not weigh in a
+  duplicate or placement decision; judge on the non-repetitive part. Repeats can be
+  inferred from contacts, from the hap1-to-hap2 alignment (done for small scaffolds: loose
+  alignments against a dense one), and from a repeat track: Red
+  (https://github.com/BioinformaticsToolsmith/Red) is fast and its output can be added to
+  the map with PretextGraph (https://github.com/sanger-tol/PretextGraph). To do: read a
+  repeat track when the map has one (maps already carry gap, telomere, coverage), offer to
+  run Red on `--fasta`, and use it wherever sequence is weighed (pairing, duplicates,
+  unlocs, alignment breaks).
 - **FASTGA** (https://github.com/thegenemyers/FASTGA) for the pairwise alignment between
   haplotypes: benchmark against minimap2 asm5. On Troglobisium minimap2 took 94 minutes
   and 10 GB for H2 against H1, and the small-against-all alignment does not fit in this

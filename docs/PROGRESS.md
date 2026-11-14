@@ -1146,3 +1146,33 @@ Done
   To ask: H1_scaffold_44 (2 Mb) aligns 70% to both H1_scaffold_36 and H2_scaffold_40 and is
   now a false duplicate; the original curation has it inside the chromosome next to
   H2_scaffold_40.
+
+## 2026-11-14: duplicates and placement judged on non-repetitive sequence (owl H1_scaffold_44)
+
+Curator: H1_scaffold_44 belongs inside the chromosome (flip it, next to H2_scaffold_40).
+A large repeat array was assembled in different amounts in the two haplotypes; the
+non-repetitive sequence after it is haplotypic. Repetitive sequence is already
+"duplicated", so it should not weigh in the decision. Repeats can also be inferred from
+contacts and from a repeat track (Red, added with PretextGraph: see HANDOFF).
+
+What the alignments show (small-against-all)
+- H1_scaffold_44, 1.96 Mb: 0-0.55 Mb aligns to itself only; 0.55-1.95 Mb aligns loosely
+  (0.3-0.45 of the bases in matches, mapq 0) to H1_scaffold_36, H2_scaffold_40 and itself:
+  the array. The last 262 kb aligns densely (0.83, mapq 60) to H2_scaffold_40 0-262 kb
+  and has no comparable match in H1_scaffold_36.
+- The five real duplicates align over their whole length to both copies at 0.91-1.00.
+- The H2-against-H1 alignment misses the 262 kb match: H2_scaffold_40's first 262 kb is
+  already taken by its long chain to H1_scaffold_36, and one target per stretch is reported.
+
+Done
+- `place_small`: where a small scaffold has a dense alignment (half or more of the bases
+  in matches) over at least 50 kb and 10% of its length but under 90%, that part is its
+  non-repetitive sequence and the chromosome, the copy and the duplicate call rest on it
+  alone; another copy "has the same sequence" only if it aligns there at 0.7 of the best
+  density. The evidence text gives the size of the non-repetitive part.
+- Unique alignments of small scaffolds to the other haplotype are added to the block
+  index used for order and orientation when the main alignment does not cover them.
+- Owl result: H1_scaffold_44 is no longer a false duplicate. It is joined after
+  H1_scaffold_36, reversed, parallel to the start of H2_scaffold_40 (in the H1 copy: only
+  H2_scaffold_40 has that sequence). 5 false duplicates remain. New: H1_scaffold_31
+  (4.98 Mb, 972 kb non-repetitive) attached as Unloc to H1_scaffold_33.

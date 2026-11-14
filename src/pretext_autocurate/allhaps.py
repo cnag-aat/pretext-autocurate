@@ -482,7 +482,8 @@ def _small_alignments(pt, small_blocks):
         x, y = unit(bk.q, (bk.qs + bk.qe) / 2), unit(bk.t, (bk.ts + bk.te) / 2)
         if x is None or y is None or x == y:
             continue
-        e = out.setdefault(x, {}).setdefault(y, [[], [], 0, 0])
+        e = out.setdefault(x, {}).setdefault(y, [[], [], 0, 0, []])
+        e[4].append((bk.qs, bk.qe, bk.matches / max(bk.qe - bk.qs, 1)))     # with the density of matches
         e[0].append((bk.qs, bk.qe))
         if bk.mapq >= 30:
             e[1].append((bk.qs, bk.qe))
@@ -519,7 +520,7 @@ def same_prefix_pairs(pt, info, small_blocks, min_bp=500000, frac_min=0.5):
 
 
 def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_margin=2.0, hic_agree=1.5,
-                hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5,
+                hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5, dense_min=0.5,
                 phasing="hic", copy_margin=1.5, cis_frac=0.2):
     """Which chromosome each remaining small scaffold belongs to.
 
@@ -551,9 +552,30 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         return []
     aln = _small_alignments(pt, small_blocks) if small_blocks is not None else {}
     bpp = pt.bp_per_pix
-    seq = {}
+    seq, nonrep = {}, {}
     for u in small:
         per, L = {}, npx[u] * bpp
+        # Non-repetitive sequence: stretches with a dense alignment somewhere (most bases matching).
+        # A repeat array aligns loosely to every copy of the array, and how much of it each
+        # haplotype assembled says nothing; where there is non-repetitive sequence the decision
+        # rests on that alone (curator, 2026-11-14).
+        dense = [(a, b, d) for e in aln.get(u, {}).values() for a, b, d in e[4] if d >= dense_min]
+        D = sorted((a, b) for a, b, _ in dense)
+        Ld = _union(D)
+        if Ld >= max(50000, 0.1 * L) and Ld < 0.9 * L:
+            top = max(d for _, _, d in dense)
+
+            def within(iv):
+                return _union([(max(a, x), min(b, y)) for a, b in iv for x, y in D if min(b, y) > max(a, x)])
+            for v, e in aln.get(u, {}).items():
+                if v in chrom:
+                    per.setdefault(chrom[v], {})[v] = [(a, b) for a, b, d in e[4] if d >= 0.7 * top]
+            f = sorted(((within([i for iv in d.values() for i in iv]) / Ld, k) for k, d in per.items()), reverse=True)
+            if f and f[0][0] > 0:
+                k = f[0][1]
+                seq[u] = (f[0][0], f[1][0] if len(f) > 1 else 0.0, k, {v: within(iv) / Ld for v, iv in per[k].items()})
+                nonrep[u] = (Ld, L)
+            continue
         for v, e in aln.get(u, {}).items():
             if v in chrom:
                 per.setdefault(chrom[v], {})[v] = e[0]
@@ -590,7 +612,9 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         k, action, why = None, None, ""
         if seq_ok:
             k = s[2]
-            why = f"{100 * min(s[0], 1):.0f}% of it aligns to the chromosome {name(k)} (next chromosome {100 * s[1]:.0f}%)"
+            what = "it" if u not in nonrep else (f"its non-repetitive sequence ({nonrep[u][0] / 1e3:.0f} kb of "
+                                                 f"{nonrep[u][1] / 1e3:.0f} kb; the rest aligns only loosely, as repeats do)")
+            why = f"{100 * min(s[0], 1):.0f}% of {what} aligns to the chromosome {name(k)} (next chromosome {100 * s[1]:.0f}%)"
             if sc0[0][1] == k and r0 >= hic_agree:
                 action = "unloc"
                 why += f"; Hi-C agrees: MQ0 contact with it is {r0:.1f}x the next chromosome"
@@ -1060,6 +1084,19 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             extra_of.setdefault(mate_of[p.a], []).append(p.b)
     arranged, joined, arr_rows, sol = {}, {}, [], {}
     block_idx = _block_index(blocks) if blocks is not None else None
+    if block_idx is not None and small_blocks is not None:
+        # unique alignments of small scaffolds to the other haplotype, which the H2-against-H1
+        # alignment can miss (it reports one best target per stretch of the query)
+        pre = lambda n: (re.match(hap_regex, n).group(1) if re.match(hap_regex, n) else "")
+        have = {}
+        for b in blocks:                                    # what the main alignment already says, per pair
+            have.setdefault((b.q, b.t), []).append((b.qs, b.qe))
+            have.setdefault((b.t, b.q), []).append((b.ts, b.te))
+        seen = lambda b: _union([(max(b.qs, x), min(b.qe, y)) for x, y in have.get((b.q, b.t), [])
+                                 if min(b.qe, y) > max(b.qs, x)]) >= 0.5 * (b.qe - b.qs)
+        more = [b for b in small_blocks if b.primary and b.mapq >= 30 and pre(b.q) != pre(b.t) and not seen(b)]
+        for name, v in _block_index(more).items():
+            block_idx.setdefault(name, []).extend(v)
     # Pairs that are parts of one chromosome become one: the smaller pair's two units go into
     # the chains of the larger pair's two copies (same haplotype prefix on each side).
     host_of = {}
