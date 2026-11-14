@@ -323,10 +323,17 @@ class TestAllhapsSequence(unittest.TestCase):
         rows, st, _ = curate_allhaps(self.pt, phasing="hic", hi=hi, blocks=read_paf(PAF, min_mapq=0),
                                      small_blocks=read_paf(sp, min_mapq=0))
         un = {r["scaffold"]: r["partner"] for r in rows if r["action"] in ("unloc", "join")}
+        joins = {r["scaffold"] for r in rows if r["action"] == "join"}
         # H2_scaffold_34 (3.9 Mb) is large enough to be placed by end contact: joined in front of W
         re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
         self.assertTrue(re["H2_scaffold_8"].startswith("new order: H2_scaffold_34"))
-        self.assertEqual(len(re), 1)
+        # H1_scaffold_168 (0.5 Mb, in no pair) aligns to H2_scaffold_5 where H1_scaffold_6 has a gap with
+        # no contact across and no sequence: it goes in there. Scaffolds that align where their own
+        # copy already has sequence (H2_scaffold_43, H2_scaffold_70) are duplicates and stay out.
+        self.assertEqual(set(re), {"H2_scaffold_8", "H1_scaffold_6"})
+        self.assertIn("H1_scaffold_168 0.0-0.5 Mb", re["H1_scaffold_6"])
+        self.assertEqual(un.get("H1_scaffold_168"), "H1_scaffold_6")
+        self.assertEqual(un.get("H2_scaffold_70"), "H2_scaffold_30:2")
         # the alignment disagrees with two arrangements; both are flagged, neither is changed:
         # the inverted end of H1_scaffold_2 (the curator's instruction) and H2_scaffold_39 inside H2_scaffold_4
         self.assertEqual({r["scaffold"] for r in rows if r["action"] == "arrangement_differs"},
@@ -356,7 +363,7 @@ class TestAllhapsSequence(unittest.TestCase):
             idx.setdefault(name(c), []).append(i)
         for s, copy in un.items():
             i = idx[s][0]
-            if s != "H2_scaffold_34":
+            if s not in joins:
                 self.assertIn("Unloc", st.tag_names(flags[i]), s)
             js = idx[copy.split(":")[0]]
             self.assertTrue(any(paint.get(j) == paint[i] for j in js), s)

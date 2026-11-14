@@ -49,7 +49,9 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
 - bAegFun (boreal owl, *Aegolius funereus*; allhaps H1_/H2_, MQ0 + MQ10, 65536 px) with
   curator `.savestate_6`. "The bird" in the notes is this genome.
 - qqTroRaco (Troglobisium racovitzai, a pseudoscorpion; allhaps, MQ0 only) with curator
-  `.savestate_final`. Added 2026-11-13 as the harder allhaps test.
+  `.savestate_final` and `.savestate_curator_1_on_autocurate_level1` (the curator's
+  corrections of the tool's map-only level 1.0 output, 2026-11-14), the FASTA, the
+  H2-against-H1 PAF and per-haplotype BUSCO tables. Added 2026-11-13 as the harder allhaps test.
 - CAE71 savestates only; the CAE71 maps are not in the repo.
 - Wanted (curator, 2026-11-13): an allhaps test that needs extensive curation, as the
   gastropod does. The bird is too well behaved for that. The curator will check whether
@@ -133,13 +135,15 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
 
 ## Known gaps, in rough priority
 
-0. **allhaps chains.** `merge_pairs` joins homolog pairs that are parts of one chromosome,
-   `arrange_pieces` orders and orients the pieces of each copy (end contact; the other
-   haplotype, by alignment or Hi-C line, breaks orientation ties). See the last PROGRESS
-   entries for scores. Still to do: alignment positions for piece order, alignments for
-   cut decisions, small pieces (under 40 px) inside chains, hemizygous chromosomes built
-   from several scaffolds (the curator's X: five pieces from two scaffolds; no homolog, so
-   no dual evidence), two haplotypes joined in one scaffold.
+0. **allhaps with sequence.** With `--paf` / `--fasta` the alignment now leads: breaks of
+   colinearity at gaps are cut/split candidates (`alignment_breaks`), each copy's pieces are
+   ordered and oriented along the other copy (`_project`), and loose scaffolds go into the
+   chain where they align. End contact is the check and Hi-C alone is the fallback
+   (`merge_pairs`, `arrange_pieces`). See the last PROGRESS entries for scores against the
+   two Troglobisium curator states. Still to do: which copy is the reference when the two
+   disagree (a contig should outrank a scaffold join), merges checked by alignment,
+   hemizygous chromosomes built from several scaffolds, two haplotypes joined in one
+   scaffold, pieces under 4 px.
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /
    invert_tip / keep with dual-scaffold logic, pairing, parallel layout, HAP tags, sex
    chromosome candidates). Sequence homology is implemented (`homology.py`; `run --fasta` / `--paf`; minimap2 and

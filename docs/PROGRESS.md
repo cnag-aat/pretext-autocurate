@@ -1067,3 +1067,58 @@ Next
    align next to each other in the other copy are join candidates.
 2. Reference choice when both copies are in several pieces (now simply the one in fewer).
 3. Merges checked by alignment (the curator undid two at level 1.0).
+
+## 2026-11-14: the alignment proposes cuts and joins
+
+Measured first (`H2 against H1`, blocks of 100 kb or more, mapq >= 30)
+- The PAF blocks are long chains (median 51 kb, 10% over 1 Mb, up to 56 Mb), and they end
+  exactly at the curator's cuts: H1_scaffold_2 at 18.12 Mb (H2_scaffold_59 | H2_scaffold_69),
+  H2_scaffold_1 at 43.36 Mb (H1_scaffold_7 reversed | forward), H2_scaffold_47 at 12.2 Mb
+  (the two halves of H1_scaffold_50 in swapped order).
+- Breakpoints between consecutive blocks of a scaffold, by where they fall:
+  - at a gap: owl 6, all curator cuts; Troglobisium 32, of which 18 at curator cuts and
+    several more within a few pixels of one;
+  - inside a contig: owl 38, Troglobisium 125, almost never a curator cut. These mark
+    where the other haplotype is in several scaffolds (along H1_scaffold_2: H2_scaffold_77,
+    _88, _69, _59, the chain the curator built), so they say where those scaffolds belong.
+- A first attempt at pixel resolution found nothing: the breaks sit within one pixel of
+  the gap and the test window straddled them. Breakpoints must be taken in base pairs.
+
+Done
+- `allhaps.alignment_breaks`: breakpoints between consecutive long blocks (other side
+  changes scaffold, strand, or jumps). A change of scaffold where both alignments run to
+  the ends of their scaffolds (within 300 kb) is fragmentation of the other haplotype and
+  is not a break.
+- `telomere_sites`: a breakpoint within 2 px of a gap makes that gap a candidate site even
+  with normal contact; the usual decision follows (different homologs or no
+  chromosome-level contact: cut; otherwise the site splits the copy and the arrangement
+  step orders the pieces along the other haplotype). The evidence text quotes both sides.
+- Loose scaffolds (in no pair, 4 px or more; 8 / 4 / 2 by level) that align over half
+  their length to one copy of a chromosome go into the chain of the other copy at the
+  place where they align (`along` in `curate_allhaps`; rows `join` and `rearrange`). Also
+  for the reference copy, provided its own pieces stay as they are.
+- A loose scaffold that aligns where its own copy already has sequence (half or more of
+  the stretch) is a second copy, not a missing piece: it stays out of the chain (owl
+  H2_scaffold_43 and H2_scaffold_70, both Unloc in the curation).
+- Tip-inversion protection now applies only when the inversion was decided on a high-MQ map.
+
+Result on Troglobisium with `--paf`, default level
+| | sites at a curator break | tool junctions in it | its junctions reproduced |
+|---|---|---|---|
+| final curation (49 new junctions) | 28 of 37 | 22 of 32 | 27 |
+| curator's corrections of level 1.0 (40) | 28 of 37 | 22 of 32 | 27 |
+Before this step: 25 sites (all at breaks), 18 of 23 junctions, 21 and 23 reproduced.
+19 scaffolds joined by alignment. The two curator states differ from each other in a few
+places (H1_scaffold_2, H2_scaffold_59 / _77 / _8), so neither can be matched fully.
+- Sites not at a curator break (9): one cut (H1_scaffold_2 21.8 Mb, or H2_scaffold_6
+  46.7 Mb depending on the state compared) and 8 kept sites that only split a copy
+  (H1_scaffold_16 0.5 Mb, H1_scaffold_43, H1_scaffold_46, H1_scaffold_63, H2_scaffold_6
+  6.6 Mb, H2_scaffold_17, H2_scaffold_32, H2_scaffold_60).
+- Owl: cuts unchanged (every alignment break at a gap was already a site). One new join:
+  H1_scaffold_168 (0.5 Mb) into H1_scaffold_6 at the gap at 33 Mb, where H2_scaffold_5 has
+  sequence that H1_scaffold_6 lacks and contact across the gap is zero. Not in the
+  curation; for the curator to judge.
+
+Next: breakpoints inside contigs as evidence for the other haplotype (which of two
+conflicting copies is the reference: a contig is trusted over a scaffold join); merges
+checked by alignment; the same with FASTGA once benchmarked.
