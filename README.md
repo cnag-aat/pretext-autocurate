@@ -13,7 +13,7 @@ relative to each map's own signal. Always review the output before accepting it.
 
 ## Install
 
-    git clone <this repository> && cd pretext-autocurate
+    git clone https://github.com/cnag-aat/pretext-autocurate.git && cd pretext-autocurate
     conda env create -f environment.yml
     conda activate pretext-autocurate
     pretext-autocurate --version
