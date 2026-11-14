@@ -236,7 +236,9 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
             from pretext_autocurate.homology import read_paf
             rows, _, _ = curate_allhaps(self.pt, phasing="hic", blocks=read_paf(paf, min_mapq=0))
             re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
-            self.assertIn("oriented by the other haplotype (sequence alignment): H2_scaffold_67", re["H2_scaffold_67"])
+            self.assertIn("sequence alignment", re["H2_scaffold_67"])
+            # the alignment leads for order and orientation: several copies are laid out along their homolog
+            self.assertGreaterEqual(sum("order and orientation follow the other haplotype" in v for v in re.values()), 3)
             # as the curator has it: H2_scaffold_70 forward, then H2_scaffold_67 reversed (here the whole chain is turned)
             self.assertRegex(re["H2_scaffold_67"], r"new order: H2_scaffold_67 0\.0-9\.1 Mb, H2_scaffold_70 0\.0-4\.4 Mb reversed;")
 
@@ -325,6 +327,10 @@ class TestAllhapsSequence(unittest.TestCase):
         re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
         self.assertTrue(re["H2_scaffold_8"].startswith("new order: H2_scaffold_34"))
         self.assertEqual(len(re), 1)
+        # the alignment disagrees with two arrangements; both are flagged, neither is changed:
+        # the inverted end of H1_scaffold_2 (the curator's instruction) and H2_scaffold_39 inside H2_scaffold_4
+        self.assertEqual({r["scaffold"] for r in rows if r["action"] == "arrangement_differs"},
+                         {"H1_scaffold_2", "H2_scaffold_4"})
         # the curator's own placements (savestate_6) that have evidence, with the same copy; a small
         # piece may go to the other prefix's copy (curator, 2026-11-13)
         for s, copy in (("H2_scaffold_34", "H2_scaffold_8"), ("H2_scaffold_61", "H2_scaffold_5"),

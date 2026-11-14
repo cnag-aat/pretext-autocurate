@@ -740,6 +740,41 @@ def _aligned_dir(raw, idx, piece, cols, min_bp=100000, min_frac=0.1, clear=0.7):
     return 1 if same >= clear * tot else -1 if same <= (1 - clear) * tot else 0
 
 
+def _project(raw, idx, piece, layout, min_bp=100000, min_frac=0.1, clear=0.7):
+    """Where a piece lies along the other copy as it is laid out, from sequence alignments.
+    `layout`: the other copy's pieces in order, (first pixel, last pixel, reversed).
+    Returns (position in layout pixels, direction +1 / -1) or None when too little of the
+    piece aligns there or the strands are mixed."""
+    bpp = raw.bp_per_pix
+    name = raw.names[raw.orig_scaffold[piece[0]]]
+    lo, hi = raw.rel_coord[piece[0]] * bpp, (raw.rel_coord[piece[1]] + 1) * bpp
+    ref, off = {}, 0
+    for a, b, rev in layout:
+        ref.setdefault(raw.names[raw.orig_scaffold[a]], []).append((raw.rel_coord[a] * bpp, (raw.rel_coord[b] + 1) * bpp, off, rev))
+        off += b - a + 1
+    tot = same = pos = 0.0
+    for s0, e0, other, os_, oe_, st in idx.get(name, []):
+        ov = min(e0, hi) - max(s0, lo)
+        if ov <= 0 or other not in ref:
+            continue
+        f0, f1 = (max(s0, lo) - s0) / (e0 - s0), (min(e0, hi) - s0) / (e0 - s0)
+        if not st:
+            f0, f1 = 1 - f1, 1 - f0
+        o0, o1 = os_ + f0 * (oe_ - os_), os_ + f1 * (oe_ - os_)
+        for t0, t1, off_k, rev_k in ref[other]:
+            w = min(o1, t1) - max(o0, t0)
+            if w <= 0:
+                continue
+            mid = (max(o0, t0) + min(o1, t1)) / 2
+            pos += w * (off_k + ((t1 - mid) if rev_k else (mid - t0)) / bpp)
+            tot += w
+            same += w if st != rev_k else 0.0
+    if tot < max(min_bp, min_frac * (hi - lo)):
+        return None
+    d = 1 if same >= clear * tot else -1 if same <= (1 - clear) * tot else 0
+    return (pos / tot, d) if d else None
+
+
 def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
     """Order and orientation of the pieces of one chromosome copy that give the most contact
     between neighbouring ends (exact search over all orders and orientations).
@@ -954,7 +989,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     for p in pairs:
         if p.kind == "extra" and p.a in mate_of:
             extra_of.setdefault(mate_of[p.a], []).append(p.b)
-    arranged, joined, arr_rows = {}, {}, []
+    arranged, joined, arr_rows, sol = {}, {}, [], {}
     block_idx = _block_index(blocks) if blocks is not None else None
     # Pairs that are parts of one chromosome become one: the smaller pair's two units go into
     # the chains of the larger pair's two copies (same haplotype prefix on each side).
@@ -1012,6 +1047,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         others = others[:max(0, 9 - len(pieces))]              # the search is exact, so at most 9 pieces
         pieces += [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in others]
         forced = len(units) > 1                                # a merged chromosome is laid out as one in any case
+        sol[u] = dict(pieces=pieces, init=[(i, pieces[i] in tips) for i in range(len(pieces))], units=units,
+                      others=others, forced=forced, adj=None, row=None, best=0.0, was=0.0)
         if len(pieces) < 2:
             continue
         init = [(i, pieces[i] in tips) for i in range(len(pieces))]
@@ -1032,8 +1069,10 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         by_seq = set()
         arr, best, was, adj, unclear, guided = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
                                                       guide=guide)
+        sol[u].update(adj=adj, best=best, was=was)
         if not forced and (arr == init or best - was < gain_min):
             continue
+        sol[u]["row"] = len(arr_rows)
         arranged[u] = [(pieces[i][0], pieces[i][1], r) for i, r in arr]
         for v in others + units[1:]:
             joined[v] = u
@@ -1049,6 +1088,85 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                         + ", ".join(span(*pieces[i]) for i in guided) if guided else "")
                      + ("; orientation too close to call, left as it was, for: "
                         + ", ".join(span(*pieces[i]) for i in unclear) if unclear else "")))
+    # With sequence alignments the other haplotype is the guide for order and orientation.
+    # Of the two copies of a chromosome the one in fewer pieces is the reference (arranged
+    # by end contact above); the pieces of the other are put in the order and orientation in
+    # which they align along it. End contact is the check: if it clearly prefers another
+    # arrangement, that may be a real difference between the haplotypes, so the contact
+    # arrangement stays and the row says so.
+    pair_of = {}
+    for p in pairs:
+        if p.kind not in ("extra", "merged"):
+            pair_of[p.a] = pair_of[p.b] = p
+    conflict_min = lv.at(0.3, 0.5, 0.8)
+    for u in (sorted(sol, key=lambda u: start_[u]) if block_idx is not None else []):
+        p = pair_of.get(u)
+        if p is None or u != p.a or p.b not in sol:
+            continue
+        size = lambda v: sum(b - a + 1 for a, b in sol[v]["pieces"])
+        ref, oth = sorted((p.a, p.b), key=lambda v: (len(sol[v]["pieces"]), -size(v)))
+        so = sol[oth]
+        P = so["pieces"]
+        if len(P) < 2 or so["adj"] is None:
+            continue
+        layout = arranged.get(ref) or [(a, b, r) for (a, b), (_, r) in zip(sol[ref]["pieces"], sol[ref]["init"])]
+        proj = [_project(raw, block_idx, x, layout) for x in P]
+        if any(x is None for x in proj):
+            continue
+        aln = [(i, proj[i][1] < 0) for i in sorted(range(len(P)), key=lambda i: proj[i][0])]
+        if not p.same_strand and p.kind == "pair":         # the second copy is shown reversed as a whole
+            aln = [(i, not r) for i, r in reversed(aln)]
+        total = lambda arr: sum(so["adj"][(a, ra, b, rb)] for (a, ra), (b, rb) in zip(arr, arr[1:]))
+        t_aln = total(aln)
+        cur = [(P.index((a, b)), r) for a, b, r in arranged[oth]] if oth in arranged else so["init"]
+        if aln == cur:
+            if so["row"] is not None:
+                arr_rows[so["row"]]["evidence"] += "; the same order and orientation as in the other haplotype (sequence alignment)"
+            continue
+        order_txt = ", ".join(span(P[i][0], P[i][1]) + (" reversed" if r else "") for i, r in aln)
+        links = "/".join(f"{so['adj'][(a, ra, b, rb)]:.2f}" for (a, ra), (b, rb) in zip(aln, aln[1:]))
+        tip_undone = any(P[i] in tips and not r for i, r in aln)
+        if tip_undone and so["row"] is None:
+            # an end piece was inverted on the evidence of the high-MQ map and the telomere position;
+            # the alignment would put it back. Both copies may differ there (or carry the same
+            # error): the inversion stays, flagged.
+            arr_rows.append(dict(action="arrangement_differs", scaffold=pt.names[oth],
+                                 length_mb=round(npx_[oth] * pt.bp_per_pix / 1e6, 2), partner=pt.names[ref], strand="",
+                                 tag="", score=round(so["best"], 2), next_best=round(t_aln, 2),
+                                 evidence=f"an end piece was inverted (see the invert_tip row), but as assembled it is "
+                                          f"colinear with {pt.names[ref]} (sequence alignment): the haplotypes may differ "
+                                          "here, or both carry the same arrangement; inversion kept, to check"))
+            continue
+        if so["best"] - t_aln > conflict_min:
+            note = (f"; the other haplotype (sequence alignment along {pt.names[ref]}) has a different arrangement: {order_txt} "
+                    f"(end contact {t_aln:.2f}); end contact clearly prefers the one "
+                    + ("applied" if so["row"] is not None else "assembled")
+                    + ": possibly a real difference between the haplotypes, to check")
+            if so["row"] is not None:
+                arr_rows[so["row"]]["evidence"] += note
+            else:
+                arr_rows.append(dict(action="arrangement_differs", scaffold=pt.names[oth],
+                                     length_mb=round(npx_[oth] * pt.bp_per_pix / 1e6, 2), partner=pt.names[ref], strand="",
+                                     tag="", score=round(so["best"], 2), next_best=round(t_aln, 2), evidence=note[2:]))
+            continue
+        if so["row"] is not None:
+            arr_rows[so["row"]] = None
+        if aln == so["init"] and not so["forced"]:
+            arranged.pop(oth, None)                        # the assembled arrangement is the colinear one
+            for v in so["others"]:
+                joined.pop(v, None)
+            continue
+        arranged[oth] = [(P[i][0], P[i][1], r) for i, r in aln]
+        for v in so["others"] + so["units"][1:]:
+            joined[v] = oth
+        so["row"] = len(arr_rows)
+        arr_rows.append(dict(
+            action="rearrange", scaffold=pt.names[oth], length_mb=round(npx_[oth] * pt.bp_per_pix / 1e6, 2),
+            partner=pt.names[ref], strand="", tag="", score=round(t_aln, 2), next_best=round(so["was"], 2),
+            evidence="new order: " + order_txt + f"; order and orientation follow the other haplotype (sequence alignment along "
+                     f"{pt.names[ref]}); contact between neighbouring ends {links} (sum {t_aln:.2f}) against {so['was']:.2f} "
+                     f"as assembled; the best arrangement by end contact alone scores {so['best']:.2f}"))
+    arr_rows = [r for r in arr_rows if r is not None]
     for c in small_calls:
         if c["u"] in joined:
             c["action"] = "join"

@@ -1013,3 +1013,57 @@ Committed on branch `allhaps-cuts-joins-level` (da2a901, f1d1a6f, fb99581, and t
 20 allhaps tests pass; the single-mode tests were not rerun this session. Curator's notes
 for the next session (coverage for sex chromosomes, FASTGA, hapscotch) are in
 `docs/HANDOFF.md` under "To think about next".
+
+## 2026-11-14: curator's corrections of the level 1.0 sweep; alignment leads order and orientation
+
+Fixture: `seed/fixtures/qqTroRaco*.savestate_curator_1_on_autocurate_level1` (the
+curator's corrections on top of `out_tro_sweep/level_1.00`, which was a map-only run: the
+alignment had not been given to the sweep). Against it the level 1.0 output had 21 of 38
+new junctions right; the curator changed orientations of small and medium pieces and
+undid wrong merges and joins (H1_scaffold_16 with H1_scaffold_54, H1_scaffold_24 with
+H1_scaffold_48, H1_scaffold_70 between H1_scaffold_68 and H1_scaffold_5, ...).
+Curator's point: the alignment blocks should set order and orientation; that would fix
+most errors and guide further cuts and joins at gaps. Until now they only broke
+orientation ties.
+
+Done
+- `allhaps._project`: position and direction of a piece along the other copy as laid out,
+  from the alignment blocks (weighted by aligned bases; 70% strand majority; at least
+  100 kb or 10% of the piece).
+- Second phase in `curate_allhaps` when blocks are given: of the two copies of a
+  chromosome the one in fewer pieces is the reference (arranged by end contact as
+  before); the other copy's pieces are put in the order and orientation in which they
+  align along it. Applied unless end contact prefers the contact arrangement by more than
+  0.5 summed (0.3 / 0.5 / 0.8 by level); then the contact arrangement stays and the row
+  says the haplotypes may differ there (`arrangement_differs` when nothing was moved).
+  If the alignment says the assembled arrangement is the colinear one, a contact-based
+  rearrangement is withdrawn.
+- A tip inversion decided from the high-MQ map and telomere position is not undone by
+  the alignment, only flagged (owl H1_scaffold_2, the curator's instruction).
+- Tried and rejected: letting end contact overrule the alignment at a difference of 0.15.
+  Troglobisium fell from 18 to 15 junctions in the curation.
+
+Result on Troglobisium with `--paf`, default level
+| | tool junctions in it | its junctions reproduced |
+|---|---|---|
+| curator's final curation (49 new junctions) | 18 of 23 | 21 |
+| curator's corrections of level 1.0 (40) | 18 of 23 | 23 |
+Before (alignment for ties only): 13 of 21 and 18 against the final curation.
+- Owl: one rearrangement as before (H2_scaffold_34 in front of W); two flags, nothing
+  moved: the inverted end of H1_scaffold_2, and H2_scaffold_39, which aligns between
+  H2_scaffold_4 0-83.3 Mb and its 4 Mb end piece (where the curator put it) while end
+  contact on the sparse MQ10 map prefers the assembled order.
+
+Open case from the curator (2026-11-14): the half-coverage sex chromosome of Troglobisium
+is hard to read. A second piece looks like a very large PAR, but there is no visible
+non-recombining part and coverage stays at half throughout. Not understood; the tool
+should flag these pieces, not label them. To do: a table of coverage and of the
+alignments between the X/Y pieces for the curator.
+
+Next
+1. Alignments to guide cuts and joins at gaps (the curator's second point): a gap where
+   the two sides align to different places or orientations in the other copy is a
+   candidate even when contact is normal (11 curator cuts are still missed); pieces that
+   align next to each other in the other copy are join candidates.
+2. Reference choice when both copies are in several pieces (now simply the one in fewer).
+3. Merges checked by alignment (the curator undid two at level 1.0).
