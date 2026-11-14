@@ -1279,3 +1279,21 @@ minimap2 for the haplotype alignments.
   genes), d2 H2_scaffold_3 / H2_scaffold_43 (5), d3 H1_scaffold_12 / H1_scaffold_209 (4),
   d4 within H2_scaffold_1 (2); 188 gene copies missing from the other haplotype. The copies
   keep the header hash, so the same savestate loads on both. 60 tests pass.
+
+## 2026-11-14: telo_scan.py on the owl (strand tracks)
+
+- Permission: `.claude/settings.local.json` allows running
+  `/Users/talioto/repositories/scripts/telo_scan.py` (curator's clone of cnag-aat/scripts).
+- Toy check: a chromosome with telomeres at both ends gives 5p at its start and 3p at its
+  end; two chromosomes joined end to end give both at the junction. At map resolution
+  both fall in the gap pixel, so the strand check now includes the pixel across the gap.
+- Owl run (`out_bird_telo/`, `--telomere-motif TTAGGG`, Red, BUSCO, `--add-tracks`):
+  telo_scan.py plus the whole run took 2 min 54 s.
+  - H1_scaffold_1 134.6 Mb: cut, telomeres from both sides face the gap (confirms).
+  - H1_scaffold_2 166.3 Mb: invert_tip, the end piece's telomere faces the gap (confirms).
+  - H1_scaffold_5 5.3 Mb: keep -> invert_tip. The original curation (savestate_6) inverts
+    that 5.3 Mb piece: now matched.
+  - H2_scaffold_2 5.1 Mb: keep -> invert_tip. The curator said to keep it (only the H1 tip
+    of scaffold_2 needed inverting). Its telomere faces the gap as H1_scaffold_2's does,
+    and the alignment says both are colinear as assembled. To ask the curator.
+  - HAP1 choice changed for a few pairs (telomeric ends now from telo_scan).

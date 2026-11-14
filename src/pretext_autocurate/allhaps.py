@@ -406,8 +406,10 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         Returns 'both', 'tip' (only the end piece), 'body' (only the long side) or None."""
         if thr_s is None:
             return None
-        l3 = float(t3[max(0, q - near_px):q + 1].max()) >= thr_s
-        r5 = float(t5[q + 1:q + 2 + near_px].max()) >= thr_s
+        # a pixel spans tens of kb: telomeres either side of a gap often fall in the gap's pixel
+        # or its neighbour, so each side's window includes the pixel across the gap
+        l3 = float(t3[max(0, q - near_px):q + 2].max()) >= thr_s
+        r5 = float(t5[q:q + 2 + near_px].max()) >= thr_s
         if l3 and r5:
             return "both"
         if not (l3 or r5):
