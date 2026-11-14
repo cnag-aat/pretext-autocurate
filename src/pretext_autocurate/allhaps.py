@@ -660,8 +660,8 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
                         f"the homolog of part of {pt.names[other]}, which would then be a misjoin; not moved")
         third = bool(seq_ok and all(s[3].get(v, 0.0) >= seq_min for v in (a_, b_)))
         if third:
-            why += ("; the sequence is present in both copies of the chromosome already: a third copy "
-                    "(haplotig or false duplication), highlighted")
+            why += ("; the sequence is present in both copies of the chromosome already: a third copy, "
+                    "tagged FalseDuplicate")
         out.append(dict(u=u, copy=copy, action=action, third_copy=third, evidence=why,
                         score=round(100 * min(s[0], 1), 1) if seq_ok else round(r0, 1), ratio=round(r0, 1)))
     return out
@@ -1171,7 +1171,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # Scaffolds that are in no pair but align, over at least half their length, to one copy of
     # a chromosome: they belong in the chain of the other copy (their own haplotype), at the
     # place where they align.
-    loose = {}
+    loose, false_dup = {}, {}
     if block_idx is not None:
         ridx = {n: i for i, n in enumerate(raw.names)}
 
@@ -1224,6 +1224,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                 cov += _union([(max(l, a), min(h, b)) for a, b in have if min(h, b) > max(l, a)])
             return cov / max(tot, 1e-9)
         keep = [i for i in range(len(P)) if proj[i] is not None and (i < len(base) or covered(proj[i][2]) < 0.5)]
+        for i in range(len(base), len(P)):
+            if proj[i] is not None and i not in keep:
+                false_dup[extra_u[i - len(base)]] = (copy, covered(proj[i][2]))
         arr = [(i, proj[i][1] < 0) for i in sorted(keep, key=lambda i: proj[i][0])]
         if not p.same_strand and p.kind == "pair":         # the second copy is shown reversed as a whole
             arr = [(i, not r) for i, r in reversed(arr)]
@@ -1323,6 +1326,21 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                                  + f"; scaffolds that were in no pair are placed where they align along {pt.names[oth]} "
                                    "(sequence alignment); the pieces that were already there are unchanged"))
     arr_rows = [r for r in arr_rows if r is not None]
+    # Second copies found above: not joined, kept at the end of their copy, tagged FalseDuplicate
+    # (curator, 2026-11-14: sequence that is not in the contig is kept out, whatever made it).
+    by_unit = {c["u"]: c for c in small_calls}
+    for v, (copy, frac) in false_dup.items():
+        if v in joined:
+            continue
+        why = (f"{100 * frac:.0f}% of the stretch of the other haplotype it aligns to is already covered by "
+               f"{pt.names[copy]}, its own haplotype's copy: a second copy of that sequence, kept out of the chain")
+        if v in by_unit:
+            by_unit[v]["third_copy"] = True
+            by_unit[v]["evidence"] += "; " + why
+        else:
+            c = dict(u=v, copy=copy, action="unloc", third_copy=True, evidence=why, score="", ratio="")
+            small_calls.append(c)
+            attach.setdefault(copy, []).append(c)
     for c in small_calls:
         if c["u"] in joined:
             c["action"] = "join"
@@ -1342,11 +1360,14 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     norm = float(np.median(cov[paired])) if cov is not None and len(paired) else 0.0
     rows, order, tag_of, paint_of = [], [], {}, {}
     unloc_units, sex_like, in_chain = set(), set(), set()
-    look_units = {c["u"] for c in small_calls if c["action"] == "candidate" or c["third_copy"]}
+    look_units = {c["u"] for c in small_calls if c["action"] == "candidate" and not c["third_copy"]}
+    fd_units = {c["u"] for c in small_calls if c["third_copy"] and c["action"] != "join"}
     for c in small_calls:
-        rows.append(dict(action={"unloc": "unloc", "join": "join"}.get(c["action"], "unloc_candidate"), scaffold=pt.names[c["u"]],
+        act = "join" if c["action"] == "join" else "false_duplicate" if c["third_copy"] else \
+            "unloc" if c["action"] == "unloc" else "unloc_candidate"
+        rows.append(dict(action=act, scaffold=pt.names[c["u"]],
                          length_mb=round(npx[c["u"]] * pt.bp_per_pix / 1e6, 2), partner=pt.names[c["copy"]], strand="",
-                         tag="Unloc" if c["action"] == "unloc" else "", score=c["score"], next_best="",
+                         tag={"false_duplicate": "FalseDuplicate", "unloc": "Unloc"}.get(act, ""), score=c["score"], next_best="",
                          evidence=c["evidence"] + ("; large enough to place by end contact: joined into the chromosome "
                                                    "(see the rearrange row)" if c["action"] == "join" else "")))
     rows += arr_rows
@@ -1459,7 +1480,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                 paint_of[c["u"]], tag_of[c["u"]] = paint_of[copy], tag_of[copy]
                 unloc_units.add(c["u"])
         for e in sorted(extra.get(p.a, []) + extra.get(p.b, []), key=lambda e: -npx[e.b]):
-            if e.b in joined:
+            if e.b in joined or e.b in fd_units:           # in a chain, or laid out as a false duplicate
                 tag_of.setdefault(e.b, tag_of[second] if hap[e.b] == hap[second] else tag_of[first])
                 continue
             order.append((e.b, not e.same_strand))
@@ -1529,7 +1550,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             st.scaffs.append((i, paint_of[s]))
         t = tag_of.get(s) or (("HAP" + str(haps.index(hap[s]) + 1)) if hap[s] and haps.index(hap[s]) < 2 else "")
         mask = (1 << st.tag_id(t)) if t else 0
-        if s in unloc_units:
+        if s in fd_units:
+            mask |= 1 << st.tag_id("FalseDuplicate")
+        elif s in unloc_units:
             mask |= 1 << st.tag_id("Unloc")
         if c.scaffold in dup_of or s in look_units:
             mask |= 1 << st.tag_id("vertPaint")

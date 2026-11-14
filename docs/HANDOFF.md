@@ -66,6 +66,8 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
 - Waypoints only for positions inside contigs (cuts, weak junctions, flagged joins,
   proposed insertion loci). Standalone pieces needing a look get the `vertPaint` tag.
 - Unlocs and haplotigs go at the end of their chromosome, painted with it.
+- A second copy of sequence that its own haplotype already has is tagged `FalseDuplicate`
+  and kept out of the chain, whatever produced it (curator, 2026-11-14).
 - Telomeric/subtelomeric end contacts are common at MQ0 and are not join evidence.
 - Telomere tracks are not reliable in every species: telomere signal is supporting
   evidence, never a requirement. Vertebrates and butterflies are easy; other arthropods,
@@ -122,6 +124,12 @@ Tool junctions in the curation: 23 of 29. Curator junctions reproduced: 33 of 45
   has (coverage track, haplotype alignments, the FASTA).
   If k-mer counting is needed for any of this, the curator notes that FASTK is faster
   than meryl: prefer FASTK.
+- **Contigs outrank scaffold joins** (curator, 2026-11-14). The scaffolds are from YaHS,
+  which is not perfect; contigs are built from unitigs and are not perfect either. When
+  the two copies of a chromosome disagree, the one that is contiguous sequence at that
+  point is the reference (not yet implemented: the reference is the copy in fewer pieces).
+  For a future version the curator can provide the hifiasm unitig GFAs of hap1 and hap2;
+  sequence names differ from the assembly, so matching needs a graph alignment.
 - **FASTGA** (https://github.com/thegenemyers/FASTGA) for the pairwise alignment between
   haplotypes: benchmark against minimap2 asm5. On Troglobisium minimap2 took 94 minutes
   and 10 GB for H2 against H1, and the small-against-all alignment does not fit in this

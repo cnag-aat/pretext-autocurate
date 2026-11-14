@@ -1122,3 +1122,27 @@ places (H1_scaffold_2, H2_scaffold_59 / _77 / _8), so neither can be matched ful
 Next: breakpoints inside contigs as evidence for the other haplotype (which of two
 conflicting copies is the reference: a contig is trusted over a scaffold join); merges
 checked by alignment; the same with FASTGA once benchmarked.
+
+## 2026-11-14: false duplicates tagged; curator's comments
+
+Curator
+- A loose scaffold that is a second copy of sequence its own haplotype already has can be
+  labelled `FalseDuplicate` (sequencing error, a tandem repeat or a segmental duplication
+  in one copy; whatever the cause, if it is not in the contig it is kept out).
+- Contigs have priority over scaffolds. The scaffolds were built with YaHS, which is not
+  perfect. Contigs are not perfect either (built from unitigs), but that is harder to use.
+  For a future version the curator could provide the hifiasm unitig GFAs for hap1 and
+  hap2; names differ from the assembly, so matching would need a graph alignment.
+- The curator agrees with the join of H1_scaffold_168 into H1_scaffold_6 at 33 Mb (owl).
+
+Done
+- Second copies are tagged `FalseDuplicate` (not Unloc, no vertPaint), laid out at the end
+  of their copy and painted with it; row `false_duplicate`. Two sources: a small scaffold
+  aligned to both copies of its chromosome (`place_small`, needs `--small-paf`), and a
+  loose scaffold that aligns where its own copy already has sequence (`along`).
+  BUSCO-only candidates stay `false_duplicate_candidate` with vertPaint (a guide only).
+- Owl with both PAFs and the BUSCO tables: 6 false duplicates (H1_scaffold_44, _192, _209,
+  H2_scaffold_43, _70, _86), 2 unlocs, 2 joins (H2_scaffold_34, H1_scaffold_168).
+  To ask: H1_scaffold_44 (2 Mb) aligns 70% to both H1_scaffold_36 and H2_scaffold_40 and is
+  now a false duplicate; the original curation has it inside the chromosome next to
+  H2_scaffold_40.

@@ -322,8 +322,12 @@ class TestAllhapsSequence(unittest.TestCase):
         hi = Pretext(M0.replace("diploid_mq0", "diploid_mq10"), load_graphs=False)
         rows, st, _ = curate_allhaps(self.pt, phasing="hic", hi=hi, blocks=read_paf(PAF, min_mapq=0),
                                      small_blocks=read_paf(sp, min_mapq=0))
-        un = {r["scaffold"]: r["partner"] for r in rows if r["action"] in ("unloc", "join")}
+        un = {r["scaffold"]: r["partner"] for r in rows if r["action"] in ("unloc", "join", "false_duplicate")}
         joins = {r["scaffold"] for r in rows if r["action"] == "join"}
+        # sequence already present in both copies is a false duplicate (curator, 2026-11-14): at the end
+        # of its copy, tagged FalseDuplicate instead of Unloc
+        fd = {r["scaffold"] for r in rows if r["action"] == "false_duplicate"}
+        self.assertTrue({"H2_scaffold_70", "H1_scaffold_209", "H1_scaffold_44", "H2_scaffold_43"} <= fd, fd)
         # H2_scaffold_34 (3.9 Mb) is large enough to be placed by end contact: joined in front of W
         re = {r["scaffold"]: r["evidence"] for r in rows if r["action"] == "rearrange"}
         self.assertTrue(re["H2_scaffold_8"].startswith("new order: H2_scaffold_34"))
@@ -344,7 +348,7 @@ class TestAllhapsSequence(unittest.TestCase):
                         ("H2_scaffold_70", "H2_scaffold_30:2"), ("H1_scaffold_44", "H2_scaffold_40"),
                         ("H1_scaffold_209", "H2_scaffold_13")):
             self.assertEqual(un.get(s), copy, s)
-        self.assertLessEqual(len(un), 12)
+        self.assertLessEqual(len(un), 20)
         t_rows, _, _ = curate_allhaps(self.pt, phasing="trio", hi=hi, blocks=read_paf(PAF, min_mapq=0),
                                       small_blocks=read_paf(sp, min_mapq=0), do_cuts=False)
         self.assertTrue(all(r["scaffold"][:2] == r["partner"][:2] for r in t_rows
@@ -363,7 +367,10 @@ class TestAllhapsSequence(unittest.TestCase):
             idx.setdefault(name(c), []).append(i)
         for s, copy in un.items():
             i = idx[s][0]
-            if s not in joins:
+            if s in fd:
+                self.assertIn("FalseDuplicate", st.tag_names(flags[i]), s)
+                self.assertNotIn("Unloc", st.tag_names(flags[i]), s)
+            elif s not in joins:
                 self.assertIn("Unloc", st.tag_names(flags[i]), s)
             js = idx[copy.split(":")[0]]
             self.assertTrue(any(paint.get(j) == paint[i] for j in js), s)
