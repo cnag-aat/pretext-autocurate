@@ -104,11 +104,11 @@ def from_map(pt):
 
 
 def run_telo_scan(fasta, workdir, motif, script=None, threads=8):
-    """telo_scan.py on the assembly. Returns {'telomere_5p': bedgraph, 'telomere_3p': bedgraph}."""
-    exe = script or shutil.which("telo_scan.py")
-    if not exe or not os.path.exists(exe):
-        raise RuntimeError("telo_scan.py not found: give its path with --telo-scan "
-                           "(https://github.com/cnag-aat/scripts/blob/main/telo_scan.py)")
+    """telo_scan.py on the assembly: the copy bundled in `vendor/` (CNAG, cnag-aat/scripts),
+    or `script` if given. Returns {'telomere_5p': bedgraph, 'telomere_3p': bedgraph}."""
+    exe = script or os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "telo_scan.py")
+    if not os.path.exists(exe):
+        raise RuntimeError(f"telo_scan.py not found at {exe}")
     os.makedirs(workdir, exist_ok=True)
     prefix = os.path.join(workdir, "telo_scan")
     m = motif.upper()

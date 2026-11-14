@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Telomeres by strand: `--telomere-motif` runs telo_scan.py (CNAG) on `--fasta`
-  (`--telo-scan PATH`), or give its bedgraphs with `--telomere-5p` / `--telomere-3p`, or
+- Telomeres by strand: `--telomere-motif` runs telo_scan.py (CNAG; bundled in
+  `pretext_autocurate/vendor/`, `--telo-scan PATH` to use another copy) on `--fasta`, or give its bedgraphs with `--telomere-5p` / `--telomere-3p`, or
   carry them in the map as `5p_telomere` / `3p_telomere` tracks. At a gap: telomeres facing
   the gap from both sides, or from the long side, mean two chromosome ends (cut); from the
   end piece only, an inverted end piece.

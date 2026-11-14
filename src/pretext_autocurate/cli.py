@@ -395,9 +395,9 @@ def main(argv=None):
                         "(aggressive); moves every act-or-flag threshold together [0.5]")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
-    p.add_argument("--telomere-motif", help="run telo_scan.py on --fasta for this motif (e.g. TTAGGG, TTAGG) and use "
-                                            "telomeres by strand; needs --telo-scan or telo_scan.py on PATH")
-    p.add_argument("--telo-scan", help="path to telo_scan.py (https://github.com/cnag-aat/scripts)")
+    p.add_argument("--telomere-motif", help="run telo_scan.py (CNAG, bundled) on --fasta for this motif (e.g. TTAGGG for "
+                                            "vertebrates, TTAGG for most arthropods) and use telomeres by strand")
+    p.add_argument("--telo-scan", help="use this telo_scan.py instead of the bundled copy")
     p.add_argument("--telomere-5p", help="existing telo_scan.py 5p_telomere bedgraph (with --telomere-3p)")
     p.add_argument("--telomere-3p", help="existing telo_scan.py 3p_telomere bedgraph (with --telomere-5p)")
     p.add_argument("--repeats", help="repeat intervals (BED: name, start, end), e.g. from Red")

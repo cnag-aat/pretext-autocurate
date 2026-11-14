@@ -1313,3 +1313,7 @@ minimap2 for the haplotype alignments.
   so peaks stand out without post-processing. PretextGraph itself keeps 185 of the 399
   pixels that have any 3p window; dropping windows below telo_scan's own threshold (100)
   leaves 126 and removes weak interstitial runs. Optional, not needed.
+- telo_scan.py bundled (curator's own script, cnag-aat/scripts commit 666994c) as
+  `src/pretext_autocurate/vendor/telo_scan.py`, unchanged apart from a provenance header;
+  `--telomere-motif` uses it by default (`--telo-scan` for another copy). Test: the bundled
+  copy on a toy assembly gives 5p at a start, 3p at an end, both at an end-to-end join.

@@ -62,6 +62,25 @@ class TestTracks(unittest.TestCase):
             miss = [l.split() for l in open(out["busco_missing_hap"])]
             self.assertEqual(miss, [["H1_a", "9000", "9500", "1"]])
 
+    def test_bundled_telo_scan(self):
+        """The bundled telo_scan.py runs and labels strands as the rules expect: 5p at a
+        chromosome's start, 3p at its end, both where two chromosomes meet end to end."""
+        import random
+        random.seed(2)
+        r = lambda n: "".join(random.choice("ACGT") for _ in range(n))
+        with tempfile.TemporaryDirectory() as d:
+            fa = os.path.join(d, "toy.fa")
+            with open(fa, "w") as f:
+                f.write(">chrA\n" + "CCCTAA" * 400 + r(200000) + "TTAGGG" * 400 + "\n")
+                f.write(">chrB\n" + r(150000) + "TTAGGG" * 300 + "N" * 100 + "CCCTAA" * 300 + r(150000) + "\n")
+            out = tracks.run_telo_scan(fa, d, "TTAGGG", threads=2)
+            hit = lambda p: [(c[0], int(c[1])) for c in (l.split() for l in open(p)) if float(c[3]) >= 100]
+            p5, p3 = hit(out["telomere_5p"]), hit(out["telomere_3p"])
+            self.assertIn(("chrA", 0), p5)
+            self.assertTrue(any(n == "chrA" and s >= 200000 for n, s in p3))
+            self.assertIn(("chrB", 150000), p5)
+            self.assertIn(("chrB", 150000), p3)
+
     def test_strands_decide_a_telomere_site(self):
         """H1_scaffold_2 at 166.3 Mb: the end piece is inverted (curator). With strand tracks:
         a telomere on the end piece facing the gap keeps that call; telomeres on both sides
