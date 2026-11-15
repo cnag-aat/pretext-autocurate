@@ -22,6 +22,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `homology.py` | minimap2 between haplotypes (`align_haplotypes`) and of small scaffolds against everything (`align_small`), PAF reading, external tool lookup |
 | `busco.py` | BUSCO lineage (path or name, opt-in download), miniprot, gene counts per haplotype and scaffold |
 | `tracks.py` | evidence tracks: bedgraph/BED or map tracks -> per-pixel arrays (`to_pixels`, `from_map`, `load`); runs telo_scan.py (`run_telo_scan`) and Red (`run_red`, Intel build under Rosetta); BUSCO duplicate-pair / missing-gene tracks (`busco_tracks`); map copies with tracks via PretextGraph (`add_tracks`) |
+| `sexchrom.py` | sex chromosomes from the coverage track and the alignments (`analyse`): sex-linked stretches (half coverage, not aligned, or aligned into one: the other sex chromosome), PARs (normal-coverage end with chromosome-level contact, aligned or MQ0-linked to the other sex chromosome's end), another chromosome joined to a sex chromosome; `same_hap_candidates` for `homology.align_within`; `sex_chromosome` / `par` bedgraphs (`write_tracks`) |
 | `vendor/telo_scan.py` | the curator's telomere scanner (cnag-aat/scripts 666994c), bundled unchanged apart from a provenance header |
 | `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` (mode detection, `--level` / `--sweep`, review table, run info, track options) |
 
@@ -181,11 +182,17 @@ Curation quality, two-haplotype mode
    per pair, see PROGRESS). Still open: a pair where each copy is right in a different
    place gets one reference only (flagged `arrangement_differs`); a merged layout taking
    each disagreement from the contiguous copy would settle those.
-2. **Hemizygous and sex chromosomes from coverage** (curator). Chain half-coverage pieces
-   by end contact alone (they have no homolog to guide them; the Troglobisium X is five
-   pieces), find the boundary where a sex chromosome and an autosome are joined in one
-   scaffold (a step in the coverage track), and look at SCINKD / HalfDeep for labelling
-   X/Y or Z/W. Prefer FASTK if k-mers are needed.
+2. ~~**Hemizygous and sex chromosomes from coverage** (curator)~~ done 2026-11-15
+   (`sexchrom.py`, see PROGRESS): sex-linked stretches, PARs, coverage steps where another
+   chromosome is joined, hemizygous pieces chained by contact, `sex_chromosome` / `par`
+   tracks, tags with `--sex-system` (XY, ZW, X0, Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2). Still
+   open: interleaving hemizygous pieces (the curator split H2_scaffold_46 at its gap at
+   8.59 Mb and put the first part into H1_scaffold_1's gap at 109.78 Mb; the tool places
+   H2_scaffold_46 whole at the end of the X): split chained pieces at their gaps and place
+   the parts by end contact. Which copy is which without `--sex-system` is left to the
+   curator (needs species knowledge). Homomorphic sex chromosomes, and any sample of the
+   homogametic sex, show no hemizygous stretch and are paired as autosomes (the
+   `sex_summary` row says so); SCINKD-style k-mers would need reads of both sexes.
 3. **Shared Hi-C backbone** (from hapscotch). Map the MQ0 contacts of both copies onto
    one coordinate system through the alignment and decide joins and cuts on the sum. Twice
    the signal; this matters most for MQ0-only maps such as Troglobisium.
@@ -244,9 +251,9 @@ Engineering
    chain where they align. End contact is the check and Hi-C alone is the fallback
    (`merge_pairs`, `arrange_pieces`). See the last PROGRESS entries for scores against the
    two Troglobisium curator states. The reference copy is the one whose arrangement the other
-   copy's contigs contradict less (2026-11-15). Still to do: merges checked by alignment,
-   hemizygous chromosomes built from several scaffolds, two haplotypes joined in one
-   scaffold, pieces under 4 px.
+   copy's contigs contradict less (2026-11-15). Hemizygous pieces in no pair join the sex
+   chromosome they contact (`sexchrom`, 2026-11-15). Still to do: merges checked by
+   alignment, two haplotypes joined in one scaffold, pieces under 4 px.
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /
    invert_tip / keep with dual-scaffold logic, pairing, parallel layout, HAP tags, sex
    chromosome candidates). Sequence homology is implemented (`homology.py`; `run --fasta` / `--paf`; minimap2 and

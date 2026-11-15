@@ -104,8 +104,12 @@ def cmd_haplotigs(a):
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
+                  "sex_boundary": "sex chromosome meets another chromosome, not cut",
                   "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
                   "sex_chromosome_candidate": "hemizygous chromosome", "pair_unequal": "possible sex chromosome pair",
+                  "sex_chromosome_join": "hemizygous piece placed by contact", "par_candidate": "possible PAR, not confirmed",
+                  "par": "pseudoautosomal region: check its extent", "sex_linked_region": "coverage and alignment of a sex chromosome",
+                  "sex_summary": "sex chromosomes found (or why none)",
                   "place_next_to_homolog": "position along the homolog not resolved", "merge": "two pairs laid out as one chromosome",
                   "false_duplicate": "tagged FalseDuplicate", "unpaired": "no homolog found"}
 
@@ -226,6 +230,7 @@ def _with_tracks(a, hits):
     if hits:
         hap_of = lambda n: (re.match(a.hap_regex, n).group(1) if re.match(a.hap_regex, n) else "")
         files.update(tracks.busco_tracks(hits, hap_of, os.path.join(a.out_dir, "tracks")))
+    files.update(getattr(a, "sex_track_files", {}))          # sex_chromosome, par (sexchrom.write_tracks)
     if not files:
         print("warning: --add-tracks: no tracks to add (give --repeats/--red, --telomere-*, or BUSCO)", file=sys.stderr)
         return []
@@ -331,13 +336,36 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             hits = busco.read_hits(mp)
             print(f"BUSCO: complete hits for {len(hits)} genes from {mp}", file=sys.stderr)
+        # Sex chromosomes (sexchrom): two sex-linked scaffolds in one haplotype are not in the
+        # alignment between haplotypes, so their PARs are looked for by aligning them to each other.
+        same = None
+        if "coverage" in pt.graphs:
+            import re
+            from . import sexchrom
+            groups = sexchrom.same_hap_candidates(pt, blocks, a.hap_regex, level=a.level) if a.fasta and blocks else {}
+            if groups:
+                from .homology import align_within, read_paf
+                names = sorted(n for v in groups.values() for n in v)
+                print(f"sex chromosomes: aligning {', '.join(names)} to each other within their haplotype (PARs)",
+                      file=sys.stderr)
+                try:
+                    wp = align_within(a.fasta, names, a.work_dir or os.path.join(a.out_dir, "work"), threads=a.threads,
+                                      minimap2=a.minimap2)
+                except RuntimeError as e:
+                    sys.exit(f"error: {e}")
+                pre = lambda n: (re.match(a.hap_regex, n).group(1) if re.match(a.hap_regex, n) else "")
+                same = [b for b in read_paf(wp, min_mapq=0) if pre(b.q) == pre(b.t)]
+            # bedgraphs of the sex-linked stretches and PARs (added to the map with --add-tracks)
+            res = sexchrom.analyse(pt, blocks, same, level=a.level)
+            a.sex_track_files = sexchrom.write_tracks(pt, res, os.path.join(a.out_dir, "tracks")) if res["stretches"] else {}
         tracked = _with_tracks(a, hits)             # once: the tracks do not depend on the level
         levels =[float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
             try:
                 rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
-                                                busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex)
+                                                busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex,
+                                                same_hap_blocks=same, sex_system=a.sex_system)
             except ValueError as e:
                 sys.exit(f"error: {e}")
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
@@ -460,6 +488,10 @@ def main(argv=None):
     p.add_argument("--busco-variants", action="store_true", help="align all protein variants (several times slower)")
     p.add_argument("--miniprot-paf", help="allhaps: an existing miniprot alignment of BUSCO proteins, used in place of running it")
     p.add_argument("--miniprot", help="path to miniprot (default: PATH, then conda env pretext-autocurate)")
+    p.add_argument("--sex-system", choices=["XY", "ZW", "X0", "Z0", "X1X2Y", "XY1Y2", "Z1Z2W", "ZW1W2"],
+                   help="allhaps: the species' sex chromosome system, if known; the sex chromosome copies found from "
+                        "coverage are then tagged: XY/ZW the larger X (Z); X0/Z0 all X (Z); X1X2Y etc. the copy homologous "
+                        "to both others Y (W), the others X1, X2 by size. Without it they are tagged HAP1 only")
     p.add_argument("--apply-inserts", action="store_true", help="insert localised pieces instead of only proposing them")
     p.set_defaults(fn=cmd_run)
     a = ap.parse_args(argv)

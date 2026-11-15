@@ -60,7 +60,8 @@ In the savestate:
 - **Paint**: one colour per chromosome copy; unlocs and false duplicates are painted with
   their chromosome and sit at its end.
 - **Tags**: `HAP1` / `HAP2` on everything in two-haplotype mode; `Unloc`, `Haplotig`,
-  `FalseDuplicate`; sex chromosome candidates are both `HAP1`.
+  `FalseDuplicate`; sex chromosome candidates are all `HAP1` (and `X`, `Y`, `Z`, `W`,
+  `X1` ... with `--sex-system`).
 - **Waypoints**: positions inside contigs to look at (cuts, flagged sites, proposed
   insertion points).
 - **vertPaint** (vertical band): a standalone piece that needs a look (an unloc candidate,
@@ -95,8 +96,20 @@ Two haplotypes (`allhaps`):
 - **Small scaffolds**: attached as `Unloc` where sequence and Hi-C agree, or joined when
   they continue a copy; a second copy of sequence its haplotype already has is tagged
   `FalseDuplicate`; repeat-rich scaffolds are judged on their non-repetitive part.
-- **Sex chromosomes**: a pair or scaffold at half coverage is reported as a candidate, both
-  copies `HAP1`.
+- **Sex chromosomes** (from the `coverage` track, and the alignment when given): a
+  stretch at about half coverage that does not align to the other haplotype is
+  hemizygous, i.e. the sex-specific part of a sex chromosome; a half-coverage stretch that
+  aligns into one is the other sex chromosome's homologous part. Next to it, normal-coverage
+  sequence that shares chromosome-level contact with it and aligns to the other sex
+  chromosome's end is a PAR (recombines like an autosome; never a haplotig); with no
+  contact it is another chromosome joined there (the cut row says so). Hemizygous scaffolds
+  in no pair join the sex chromosome they contact. Sex chromosomes are all `HAP1`. Which is
+  which needs knowledge of the species, so they are only labelled with `--sex-system`:
+  `XY` / `ZW` (the larger of the pair `X` / `Z`), `X0` / `Z0` (all `X` / `Z`), or `X1X2Y`,
+  `XY1Y2`, `Z1Z2W`, `ZW1W2` (the copy homologous to both others is the single one).
+  Only what is hemizygous in the sequenced individual shows: a sample of the homogametic
+  sex (XX, ZZ) or homomorphic sex chromosomes look like autosomes and are paired as such;
+  the `sex_summary` row says when nothing was found.
 - Flags (does not change): sites where both sides belong together, places where the two
   haplotypes disagree, unloc candidates with one line of evidence, scaffolds with no homolog.
 
@@ -119,7 +132,8 @@ haplotigs (off-diagonal line plus reduced coverage; borderline ones highlighted)
 | `--busco-lineage`, `--miniprot-paf` | let the tool find BUSCO genes itself (slow) |
 | `--repeats BED`, `--red` | a repeat track (e.g. from Red); `--red` runs Red on each haplotype of `--fasta` (about 25 min for a 2.7 Gb assembly) |
 | `--telomere-motif MOTIF` | runs the bundled telo_scan.py (CNAG) on `--fasta` for telomeres by strand (e.g. TTAGGG vertebrates, TTAGG most arthropods); tells two chromosome ends joined from an inverted end piece. A few minutes for a 4 Gb assembly. `--telomere-5p/3p` take existing telo_scan bedgraphs; maps that already carry its 5p/3p tracks are read directly |
-| `--add-tracks` | write a copy of each map with these tracks and the BUSCO duplicate pairs / missing genes, for viewing in PretextView (needs PretextGraph) |
+| `--add-tracks` | write a copy of each map with these tracks, the BUSCO duplicate pairs / missing genes, and the sex chromosome tracks (`sex_chromosome`: 2 hemizygous, 1 the rest of a sex-linked stretch; `par`: 2 PAR, 1 candidate), for viewing in PretextView (needs PretextGraph). The bedgraphs are in `OUT_DIR/tracks/` in any case |
+| `--sex-system SYSTEM` | the species' sex chromosome system, if known (`XY`, `ZW`, `X0`, `Z0`, `X1X2Y`, `XY1Y2`, `Z1Z2W`, `ZW1W2`): tags the sex chromosome copies `X`/`Y`, `Z`/`W`, `X1`/`X2` ... |
 | `--hap-regex` | how to read the haplotype from a scaffold name (default `^(H\d+)_`) |
 
 Run `pretext-autocurate run --help` for every option.

@@ -1367,3 +1367,80 @@ contiguous sequence there is the reference, not the copy in fewer pieces.
 - Test `test_contig_conflicts`: H2_scaffold_3 contradicts H1_scaffold_5 + H1_scaffold_68 as
   assembled by over 5 Mb, the arrangement the tool applies by under 0.5 Mb; the
   H1_scaffold_5 rearrange row names H2_scaffold_3 as leading.
+
+## 2026-11-15: sex chromosomes from coverage and alignment (`sexchrom.py`)
+
+Curator (2026-11-15): hemizygous chromosomes from coverage, using the PAF when there is
+one; PARs have normal coverage and behave like recombining autosomes; X/Y or Z/W needs
+knowledge of the species; if two sex chromosomes are in one haplotype, align them to each
+other to find PARs; tracks for PARs and sex chromosome candidates. Also: systems such as
+X1X2Y, X0 (and the ZW equivalents); homomorphic sex chromosomes, or a sample of the
+homogametic sex, look like autosomes.
+
+Measured first (coverage track divided by its median over the large scaffolds; alignment
+H2 against H1, mapq >= 30)
+- Troglobisium: nearly every autosome has a 1-4 Mb stretch at about 0.4-0.5 coverage, in
+  both copies at homologous places and aligned to each other (divergent heterozygous
+  stretches). Half coverage alone is therefore not hemizygous. The sex chromosomes are
+  what is left: H1_scaffold_1 58-119.5 Mb and H2_scaffold_46 (half coverage, not aligned,
+  61 and 23 Mb), and H1_scaffold_1 25-58 Mb with H2_scaffold_4 0-33 Mb (half coverage in
+  both, aligned to each other). The curator's final state has exactly this: X =
+  H1_scaffold_1 25-119.5 Mb + H2_scaffold_46, Y = H2_scaffold_4 0-33 Mb. The
+  normal-coverage ends H1_scaffold_1 0-25 Mb and H2_scaffold_4 33-58 Mb align to each other
+  like PARs would, but have no contact with the sex chromosome (0.000 against 0.1-0.7 within
+  one chromosome): an autosome joined to it in both haplotypes, as the curator said.
+- Owl (ZW female): Z = H1_scaffold_3 6-96 Mb and W = H2_scaffold_8 0-28.4 Mb at 0.51, not
+  aligned; their normal-coverage ends H1_scaffold_3 0-6.05 Mb and H2_scaffold_8 28.5-34.5 Mb
+  align to each other and have chromosome-level contact with their own sex-specific part
+  (0.69, 0.23): the PAR. The two PARs share MQ0 reads, so their MQ0 contact equals that
+  within each.
+
+Done
+- `sexchrom.analyse`: per scaffold, smoothed coverage (0.25 Mb) and aligned fraction, runs
+  of half-unaligned / half-aligned / other (runs under 0.5 Mb absorbed), half-coverage
+  stretches joined across normal blips up to 1.5 Mb. Sex-linked: a stretch with at least
+  `core_min` hemizygous bp (8 / 5 / 4 Mb by level, doubled without alignments), median
+  coverage 0.38-0.68, and at least 30% of its scaffold (or 3x core_min); or a half-coverage
+  stretch aligned mostly into one (the other sex chromosome's homologous part). Next to each
+  sex-linked stretch: `joined` (contact under 0.08 / 0.05 / 0.03), `par` (aligned to the
+  normal-coverage end of another sex-linked scaffold, or without alignment MQ0 contact with
+  such an end of 0.5 or more), `fused` (aligned to an ordinary chromosome: neo-sex
+  chromosome or misjoin), else `par_candidate`.
+- Guards found on the way: at a 3 Mb core the owl's low-coverage chromosome ends (0.33-0.38,
+  subtelomeric) and a 4 Mb heterozygous insertion in H2_scaffold_5 were called, and whole
+  autosomes then looked like PARs. With the coverage band, the share of the scaffold and the
+  4 Mb floor, levels 0, 0.5 and 1 find the same stretches on both genomes, with or without
+  alignments.
+- `homology.align_within`: minimap2 -X among a few scaffolds; `run` uses it with `--fasta`
+  when one haplotype holds two sex-linked scaffolds (Troglobisium: H2_scaffold_4 and
+  H2_scaffold_46, 1 min; they share only repeats, as a Y and an X piece should).
+- `curate_allhaps`: rows `sex_linked_region`, `par`, `par_candidate`, `sex_boundary`
+  (uncut joins and fusions), `sex_summary` (also when nothing is found, saying that a
+  homogametic sample or homomorphic sex chromosomes look like autosomes); cut rows at a
+  coverage step say "a sex chromosome joined to another chromosome". Hemizygous scaffolds
+  in no pair join the chain of the sex chromosome copy they contact (`sex_chromosome_join`;
+  contact 0.405 against 0.002 for H2_scaffold_46). A pair whose copies are both mostly
+  sex-linked is a sex pair even when the medians alone would not say so.
+- `--sex-system XY|ZW|X0|Z0|X1X2Y|XY1Y2|Z1Z2W|ZW1W2` (`sexchrom.sex_labels`): XY/ZW the
+  larger of the homologous pair X (Z); X0/Z0 every copy X (Z); three-chromosome systems: the
+  copy aligned to both others is the single one, the others numbered by size. Without it no
+  X/Y/Z/W tags.
+- Tracks `sex_chromosome` (2 hemizygous, 1 rest of a stretch) and `par` (2 PAR, 1
+  candidate), written to `OUT_DIR/tracks/` and added to the map copies with `--add-tracks`.
+
+Results
+- Troglobisium (map + PAF + TTAGG, `--sex-system XY`): X tagged on H1_scaffold_1
+  25-119.5 Mb and H2_scaffold_46, Y on H2_scaffold_4 0-33 Mb, both within 3% of the
+  curator's tagged bp; the cuts at 24.96 and 33.29 Mb carry the coverage step. Junctions: 21
+  of 30 in the final curation (21 of 29 before): the new one puts H2_scaffold_46 after the
+  X's end, while the curator split H2_scaffold_46 at its gap (8.59 Mb) and put the first
+  part into H1_scaffold_1's gap at 109.78 Mb.
+- Owl (`--sex-system ZW`): both PARs, Z and W tagged (the W chain includes H2_scaffold_34,
+  which end contact already put in front of the W); layout unchanged.
+- 14 tests in `tests/test_sexchrom.py`.
+
+Next
+- Interleaving hemizygous pieces: split a chained piece at its gaps and place the parts by
+  end contact (the Troglobisium X above).
+- Homomorphic sex chromosomes are not found from coverage; that would need another signal
+  (k-mers from reads of both sexes, as in SCINKD), which is not among this tool's inputs.

@@ -1046,6 +1046,27 @@ def _aligned_dir(raw, idx, piece, cols, min_bp=100000, min_frac=0.1, clear=0.7):
     return 1 if same >= clear * tot else -1 if same <= (1 - clear) * tot else 0
 
 
+def _aligned_bp(raw, idx, a, b):
+    """Bases of pixel range `a` (inclusive) that align into pixel range `b`, from a block
+    index (`_block_index`). Each alignment counts for its overlap with `a` when the
+    corresponding stretch of the other side overlaps `b` (alignments are long chains)."""
+    bpp = raw.bp_per_pix
+    na, nb = raw.names[raw.orig_scaffold[a[0]]], raw.names[raw.orig_scaffold[b[0]]]
+    lo, hi = raw.rel_coord[a[0]] * bpp, (raw.rel_coord[a[1]] + 1) * bpp
+    t0, t1 = raw.rel_coord[b[0]] * bpp, (raw.rel_coord[b[1]] + 1) * bpp
+    tot = 0.0
+    for s0, e0, other, os_, oe_, st in idx.get(na, []):
+        ov = min(e0, hi) - max(s0, lo)
+        if other != nb or ov <= 0:
+            continue
+        f0, f1 = (max(s0, lo) - s0) / (e0 - s0), (min(e0, hi) - s0) / (e0 - s0)
+        if not st:
+            f0, f1 = 1 - f1, 1 - f0
+        if min(os_ + f1 * (oe_ - os_), t1) > max(os_ + f0 * (oe_ - os_), t0):
+            tot += ov
+    return tot
+
+
 def _project(raw, idx, piece, layout, min_bp=100000, min_frac=0.1, clear=0.7):
     """Where a piece lies along the other copy as it is laid out, from sequence alignments.
     `layout`: the other copy's pieces in order, (first pixel, last pixel, reversed).
@@ -1378,7 +1399,7 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
 
 
 def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
-                   small_blocks=None, do_place=True, level=0.5, do_arrange=True):
+                   small_blocks=None, do_place=True, level=0.5, do_arrange=True, same_hap_blocks=None, sex_system=None):
     """allhaps curation: cuts (`telomere_sites`), homolog pairing, small scaffolds
     (`place_small`), merged pairs, order and orientation within each copy (end contact, then
     the other haplotype's alignment), parallel layout, HAP tags, paint, savestate.
@@ -1386,10 +1407,15 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     the H2-against-H1 alignment and `small_blocks` small scaffolds against everything (both
     optional); `busco_hits` per-gene loci for HAP1 choice and false duplicates. `do_cuts`,
     `do_place`, `do_arrange` switch steps off. `level` (0 conservative .. 1 aggressive, see
-    `Level`) moves every act-or-flag threshold together.
+    `Level`) moves every act-or-flag threshold together. `same_hap_blocks`: alignments of
+    sex-linked scaffolds within one haplotype (see sexchrom), for their PARs; `sex_system`
+    'XY' or 'ZW' (species knowledge) adds X/Y or Z/W tags to the sex chromosome copies.
     Returns (rows for the decisions table, savestate, info)."""
+    from . import sexchrom
     raw = pt
     lv = Level(level)
+    # hemizygous stretches, PARs, sex chromosomes joined to another chromosome (sexchrom)
+    sx = sexchrom.analyse(raw, blocks, same_hap_blocks, level=level)
     margin = lv.at(1.5, 1.3, 1.15)
     # 1. a first pairing on the uncut map, so that sites can be mirrored to the homolog; then
     # cut, and pair again on the pieces
@@ -1484,6 +1510,47 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     members = {}
     for u_, h_ in host_of.items():
         members.setdefault(h_, []).append(u_)
+    # Hemizygous pieces in no pair (a sex chromosome in several scaffolds has no homolog to
+    # guide it): each goes into the chain of the sex chromosome copy it has chromosome-level
+    # contact with, if that copy clearly beats every other chromosome copy; phase 1 then
+    # places it by end contact (the copy's arrangement is forced). In Troglobisium the X is
+    # H1_scaffold_1 25-119.5 Mb with H2_scaffold_46 (curator). Under trio phasing, only
+    # within a haplotype.
+    sexfrac = lambda u: float((sx["mask"][int(start_[u]):int(start_[u] + npx_[u])] > 0).mean()) if npx_[u] else 0.0
+    sex_forced, sex_rows = set(), []
+    if do_arrange and sx["stretches"]:
+        attached = {c["u"]: k for k, lst in attach.items() for c in lst}
+        groups = {c: [c] + members.get(c, []) + [x["u"] for x in attach.get(c, [])] for c in mate_of if c not in host_of}
+        rng_ = lambda v: (int(start_[v]), int(start_[v] + npx_[v] - 1))
+        for v in sorted(info["unpaired"], key=lambda v: -npx_[v]):
+            if v in mate_of or v in host_of or v in attached or npx_[v] < chain_px or sexfrac(v) < 0.5:
+                continue
+            score = {}
+            for c, g in groups.items():
+                if c == v or (phasing == "trio" and hap[c] != hap[v]):
+                    continue
+                vals = [sexchrom._contact(raw, *rng_(v), *rng_(x)) for x in g if x != v]
+                vals = [x for x in vals if not np.isnan(x)]
+                if vals:
+                    score[c] = max(vals)
+            if not score:
+                continue
+            ranked = sorted(score.items(), key=lambda x: -x[1])
+            c, best = ranked[0]
+            second = ranked[1][1] if len(ranked) > 1 else 0.0
+            if best < lv.at(0.08, 0.05, 0.03) or best < lv.at(4.0, 3.0, 2.0) * second \
+                    or max(sexfrac(x) for x in groups[c]) < 0.5:
+                continue
+            extra_of.setdefault(c, []).append(v)
+            sex_forced.add(c)
+            groups[c].append(v)
+            sex_rows.append(dict(
+                action="sex_chromosome_join", scaffold=pt.names[v], length_mb=round(npx_[v] * pt.bp_per_pix / 1e6, 2),
+                partner=pt.names[c], strand="", tag="", score=round(best, 3), next_best=round(second, 3),
+                evidence=f"hemizygous (coverage {float(np.median(sx['norm'][rng_(v)[0]:rng_(v)[1] + 1])):.2f} of a normal "
+                         f"copy, {100 * sexfrac(v):.0f}% sex-linked) and in no pair; chromosome-level contact {best:.3f} "
+                         f"with the sex chromosome copy {pt.names[c]}, against {second:.3f} with any other: put in its "
+                         "chain by end contact (see the rearrange row)"))
     span = lambda a, b: (f"{raw.names[raw.orig_scaffold[a]]} {raw.rel_coord[a] * raw.bp_per_pix / 1e6:.1f}-"
                          f"{(raw.rel_coord[b] + 1) * raw.bp_per_pix / 1e6:.1f} Mb")
     # 3. phase 1: each copy (with the units merged into it) arranged by end contact alone
@@ -1505,7 +1572,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                         [v for v in extra_of.get(u, []) if npx_[v] >= chain_px], key=lambda v: -npx_[v])
         others = others[:max(0, 9 - len(pieces))]              # the search is exact, so at most 9 pieces
         pieces += [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in others]
-        forced = len(units) > 1                                # a merged chromosome is laid out as one in any case
+        # a merged chromosome is laid out as one in any case, and so is a sex chromosome with
+        # hemizygous pieces put in its chain
+        forced = len(units) > 1 or (u in sex_forced and any(v in others for v in extra_of.get(u, [])))
         sol[u] = dict(pieces=pieces, init=[(i, pieces[i] in tips) for i in range(len(pieces))], units=units,
                       others=others, forced=forced, adj=None, row=None, best=0.0, was=0.0)
         if len(pieces) < 2:
@@ -1848,6 +1917,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # order: (unit, reversed) in final layout order; tag_of / paint_of: HAP tag and paint id
     rows, order, tag_of, paint_of = [], [], {}, {}
     unloc_units, sex_like, in_chain = set(), set(), set()
+    # sex chromosome copies laid out (main unit of each chain), how they relate (paired, or
+    # aligned bp), and the X/Y/Z/W tag per unit (only with --sex-system)
+    sex_copies, sex_links, sex_tag_of = [], {}, {}
     look_units = {c["u"] for c in small_calls if c["action"] == "candidate" and not c["third_copy"]}
     fd_units = {c["u"] for c in small_calls if c["third_copy"] and c["action"] != "join"}
     for c in small_calls:
@@ -1859,7 +1931,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                          evidence=c["evidence"] + ("; " + c["join_note"] if c.get("join_note") else
                                                    "; large enough to place by end contact: joined into the chromosome "
                                                    "(see the rearrange row)" if c["action"] == "join" else "")))
-    rows += arr_rows
+    rows += arr_rows + sex_rows
     mb = lambda s: npx[s] * pt.bp_per_pix / 1e6
     # BUSCO genes per unit (complete copies, and how many of them are duplicated in the unit)
     genes, dup_of = {}, {}
@@ -1895,7 +1967,18 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                              next_best="", evidence=f"of {total} BUSCO genes found anywhere: complete {v['complete']} "
                                                     f"({100 * v['complete'] / max(total, 1):.1f}%), single {v['single']}, "
                                                     f"duplicated {v['duplicated']}, missing {total - v['complete']}"))
+    # Sex chromosomes (sexchrom): where a sex-linked stretch meets other sequence, the coverage
+    # steps; a cut there gets the reason, an uncut boundary that is not a PAR is flagged.
+    bpp = raw.bp_per_pix
+    mbr = lambda a, b: f"{raw.rel_coord[a] * bpp / 1e6:.2f}-{(raw.rel_coord[b] + 1) * bpp / 1e6:.2f} Mb"
+    near_px = max(5, int(1e6 / bpp))                       # a cut this close to a coverage step is at it
+    end_at = lambda q: next((e for e in sx["ends"] if e["s"] == raw.orig_scaffold[q] and abs(e["boundary"] - q) <= near_px), None)
+    step_txt = lambda e: (f"coverage steps from {e['cov_sex']:.2f} (sex-linked, hemizygous) to {e['cov_other']:.2f} of a "
+                          f"normal copy at {e['edge_bp'] / 1e6:.2f} Mb")
     for q, s, why in cuts:
+        e = end_at(q)
+        if e is not None and e["kind"] in ("joined", "fused"):
+            why += f"; {step_txt(e)}: a sex chromosome joined to another chromosome"
         rows.append(dict(action="cut", scaffold=raw.names[s], length_mb=round(raw.rel_coord[q] * raw.bp_per_pix / 1e6, 2),
                          partner="", strand="", tag="", score="", next_best="",
                          evidence=f"cut at {raw.rel_coord[q] * raw.bp_per_pix / 1e6:.2f} Mb; " + why))
@@ -1905,6 +1988,55 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                              length_mb=round(raw.rel_coord[x["q"]] * raw.bp_per_pix / 1e6, 2), partner="", strand="",
                              tag="", score="", next_best="",
                              evidence=f"end piece {(x['tip'][1] - x['tip'][0] + 1) * raw.bp_per_pix / 1e6:.1f} Mb; " + x["reason"]))
+    for d in sx["stretches"]:
+        L = (d["b"] - d["a"] + 1) * bpp
+        if d["via"]:
+            o = d["via"]
+            what = (f"its sequence aligns into the sex-linked stretch of {raw.names[o[0]]} ({mbr(o[1], o[2])}): the "
+                    "homologous (gametologous) part of the other sex chromosome; a PAR would be at normal coverage")
+        else:
+            what = (f"{d['hemi_bp'] / 1e6:.1f} Mb of it at half coverage with no alignment to the other haplotype"
+                    + ("" if blocks is not None else " (no alignments given: from coverage alone)")
+                    + f", {d['aln_bp'] / 1e6:.1f} Mb aligned: the sex-specific part of a sex chromosome")
+        rows.append(dict(action="sex_linked_region", scaffold=raw.names[d["s"]], length_mb=round(L / 1e6, 2), partner="",
+                         strand="", tag="", score=round(d["cov"], 2), next_best="",
+                         evidence=f"{mbr(d['a'], d['b'])}: coverage {d['cov']:.2f} of a normal copy; {what}"))
+    for e in sx["ends"]:
+        cut_here = any(abs(q - e["boundary"]) <= near_px for q, _, _ in cuts)
+        where = f"{mbr(e['a'], e['b'])}, next to the sex-linked stretch, which ends at {e['edge_bp'] / 1e6:.2f} Mb"
+        ct = "unknown" if np.isnan(e["contact"]) else f"{e['contact']:.3f}"
+        if e["kind"] == "par":
+            p0, p1 = e["par"]
+            ev = (f"pseudoautosomal region {p0 / 1e6:.2f}-{p1 / 1e6:.2f} Mb ({where}): normal coverage "
+                  f"({e['cov_other']:.2f}), chromosome-level contact with the sex-linked stretch ({ct}), and "
+                  + (f"it aligns to the normal-coverage end of the other sex chromosome, {e['partner']}"
+                     if e["by"] == "alignment" else
+                     f"MQ0 contact with the normal-coverage end of {e['partner']} as strong as within each "
+                     f"({e.get('homolog_contact', float('nan')):.2f}; reads of a PAR map to both copies)")
+                  + "; recombines like an autosome: not a haplotig or false duplication")
+            if cut_here:
+                ev += "; a cut was made at its boundary (see the cut row): to check"
+            rows.append(dict(action="par", scaffold=raw.names[e["s"]], length_mb=round((p1 - p0) / 1e6, 2),
+                             partner=e["partner"], strand="", tag="", score=ct, next_best="", evidence=ev))
+        elif e["kind"] == "par_candidate":
+            rows.append(dict(action="par_candidate", scaffold=raw.names[e["s"]],
+                             length_mb=round((e["b"] - e["a"] + 1) * bpp / 1e6, 2), partner="", strand="", tag="",
+                             score=ct, next_best="",
+                             evidence=f"{where}: normal coverage ({e['cov_other']:.2f}) with chromosome-level contact "
+                                      f"({ct}): a PAR, or an autosome fused to the sex chromosome; "
+                                      + ("not confirmed: it does not align to another sex chromosome (if both are in one "
+                                         "haplotype, give --fasta so they are aligned to each other)" if e["have_aln"] else
+                                         "no alignments to tell (give --fasta or --paf)")))
+        elif e["kind"] == "fused" or not cut_here:
+            ev = (f"{where}: {step_txt(e)}; "
+                  + (f"chromosome-level contact {ct}, and it aligns to {e['other']} ({e['other_bp'] / 1e6:.1f} Mb), not to "
+                     "another sex chromosome: an autosome fused to the sex chromosome (a neo-sex chromosome), or a misjoin"
+                     if e["kind"] == "fused" else
+                     f"no chromosome-level contact across ({ct}): another chromosome joined to the sex chromosome; not cut "
+                     "(no site found here)"))
+            rows.append(dict(action="sex_boundary", scaffold=raw.names[e["s"]],
+                             length_mb=round(raw.rel_coord[e["boundary"]] * bpp / 1e6, 2), partner=e["other"] or "",
+                             strand="", tag="", score=ct, next_best="", evidence=ev))
 
     def pixels(s, rev=False):
         """Pixels of a unit in layout order, with any inverted end piece turned in place."""
@@ -1921,7 +2053,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         qa, ga, ta = _quality(pt, p.a, info["tel_thr"])
         qb, gb, tb = _quality(pt, p.b, info["tel_thr"])
         first, second = p.a, p.b
-        hemi = norm and all(float(np.median(cov[start[u]:start[u] + npx[u]])) / norm < 0.7 for u in (p.a, p.b))
+        # both copies at half coverage, or both mostly in sex-linked stretches (sexchrom)
+        hemi = (norm and all(float(np.median(cov[start[u]:start[u] + npx[u]])) / norm < 0.7 for u in (p.a, p.b))) \
+            or all(sexfrac(u) >= 0.5 for u in (p.a, p.b))
         if p.kind == "unequal" and not hemi:
             p.kind, p.note = "pair", "lengths differ: one copy is probably fragmented or incomplete"
         if p.kind == "pair" and hemi and min(mb(p.a), mb(p.b)) >= 5:
@@ -1929,10 +2063,15 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             p.kind, p.note = "unequal", "both copies have about half the coverage of other pairs (hemizygous)"
             sex_like.add(id(p))
         if p.kind == "unequal":
-            # convention: both sex chromosomes go to HAP1; the larger one first
-            first, second = (p.a, p.b) if npx[p.a] >= npx[p.b] else (p.b, p.a)
+            # convention: both sex chromosomes go to HAP1; the larger one (with the pieces in its
+            # chain) first
+            chain = lambda c: npx[c] + sum(npx[v] for v, u_ in joined.items() if u_ == c)
+            first, second = (p.a, p.b) if chain(p.a) >= chain(p.b) else (p.b, p.a)
             tags = ("HAP1", "HAP1")
             why = "possible sex chromosome pair: both tagged HAP1 by convention"
+            if id(p) in sex_like or all(sexfrac(u) >= 0.5 for u in (p.a, p.b)):
+                sex_copies += [first, second]
+                sex_links[frozenset((first, second))] = 1.0
         elif phasing == "trio":
             first, second = sorted((p.a, p.b), key=lambda s: haps.index(hap[s]))
             tags = ("HAP" + str(haps.index(hap[first]) + 1), "HAP" + str(haps.index(hap[second]) + 1))
@@ -1991,7 +2130,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # of a paired copy. Candidates are put together, larger first, both HAP1 (convention).
     covr = lambda s: float(np.median(cov[start[s]:start[s] + npx[s]])) / norm if norm else float("nan")
     done = {x for x, _ in order} | set(joined)
-    sex = [s for s in info["unpaired"] if s not in done and mb(s) >= 5 and covr(s) < 0.7]
+    sex = [s for s in info["unpaired"] if s not in done and mb(s) >= 5 and (covr(s) < 0.7 or sexfrac(s) >= 0.5)]
     k = len(main)
     for s in sorted(sex, key=lambda s: -npx[s]):
         partner = [t for t in sex if t != s and hap[t] != hap[s] and (s, t) in info["line"]]
@@ -2001,13 +2140,47 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             rev = not info["strand"][(s, partner)]
         order.append((s, rev))
         tag_of[s] = "HAP1"
+        sex_copies.append(s)
+        if partner is not None:
+            sex_links[frozenset((s, partner))] = 1.0
         paint_of[s] = 2 * k + 1
         k += 1
         rows.append(dict(action="sex_chromosome_candidate", scaffold=pt.names[s], length_mb=round(mb(s), 2),
                          partner=pt.names[partner] if partner is not None else "", strand="-" if rev else "+",
                          tag="HAP1", score=round(info["line"][(s, partner)], 1) if partner is not None else "",
                          next_best="", evidence=f"no homolog of similar size; coverage {covr(s):.2f} of a paired copy "
-                                                "(hemizygous); tagged HAP1 by convention; which is X/Y/Z/W is not determined"))
+                                                "(hemizygous); tagged HAP1 by convention"))
+    # Sex chromosome labels (only with --sex-system: which copy is which needs species
+    # knowledge). Copies are related when paired or when they align to each other (summed
+    # over the pieces in their chains); sexchrom.sex_labels applies the system.
+    chain_of = lambda c: [c] + [v for v, u_ in joined.items() if u_ == c] + [x["u"] for x in attach.get(c, [])]
+    sex_idx = _block_index(list(blocks or []) + list(same_hap_blocks or [])) if (blocks or same_hap_blocks) else None
+    if sex_idx and len(sex_copies) > 1:
+        for i, c1 in enumerate(sex_copies):
+            for c2 in sex_copies[i + 1:]:
+                bp = sum(_aligned_bp(raw, sex_idx, (int(start[x]), int(start[x] + npx[x] - 1)),
+                                     (int(start[y]), int(start[y] + npx[y] - 1))) for x in chain_of(c1) for y in chain_of(c2))
+                if bp >= 1e6:
+                    sex_links[frozenset((c1, c2))] = sex_links.get(frozenset((c1, c2)), 0.0) + bp
+    sizes = {c: sum(int(npx[x]) for x in chain_of(c)) * raw.bp_per_pix for c in sex_copies}
+    labels, label_note = sexchrom.sex_labels(sex_system, sex_copies, sizes, sex_links)
+    for c, t in labels.items():
+        for x in chain_of(c):
+            sex_tag_of[x] = t
+    if sx["norm"] is not None:
+        par_mb = sum((e["par"][1] - e["par"][0]) / 1e6 for e in sx["ends"] if e["kind"] == "par")
+        if sx["stretches"]:
+            ev = (f"{len(sx['stretches'])} sex-linked stretches ({sum((d['b'] - d['a'] + 1) for d in sx['stretches']) * bpp / 1e6:.1f} Mb), "
+                  f"{sum(e['kind'] == 'par' for e in sx['ends'])} PARs ({par_mb:.1f} Mb); sex chromosome copies: "
+                  + (", ".join(f"{pt.names[c]} ({sizes[c] / 1e6:.1f} Mb{', ' + labels[c] if c in labels else ''})"
+                               for c in sex_copies) or "none laid out as such"))
+        else:
+            ev = ("no hemizygous stretch found. That does not mean there are no sex chromosomes: the sample may be of "
+                  "the homogametic sex (XX, ZZ), or the sex chromosomes are homomorphic; either way they look like "
+                  "autosomes here and are paired as such")
+        rows.append(dict(action="sex_summary", scaffold="", length_mb="", partner="", strand="", tag="", score="",
+                         next_best="", evidence=ev + (f"; {label_note}" if label_note else
+                                                      "" if sex_system else "; not labelled X/Y or Z/W (give --sex-system)")))
     placed = {s for s, _ in order} | set(joined)
     for s in list(info["unpaired"]) + [u for u in info.get("repetitive", {}) if u not in info["unpaired"]]:
         if s in placed:
@@ -2051,8 +2224,11 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             mask |= 1 << st.tag_id("Unloc")
         if c.scaffold in dup_of or s in look_units:
             mask |= 1 << st.tag_id("vertPaint")
+        if s in sex_tag_of:
+            mask |= 1 << st.tag_id(sex_tag_of[s])
         if mask:
             st.meta_flags.append((i, mask))
+    info["sex"] = sx
     return rows, st, info
 
 

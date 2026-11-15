@@ -141,6 +141,40 @@ def align_small(fasta, workdir, max_bp=10_000_000, threads=8, minimap2=None, pre
     return paf
 
 
+def align_within(fasta, names, workdir, threads=8, minimap2=None, preset="asm5"):
+    """minimap2 of a few scaffolds against each other (all against all, -X: no self or
+    duplicate pairs). For sex chromosomes assembled into one haplotype: their PARs are not in
+    the alignment between haplotypes. Returns the PAF path (cached by the set of names)."""
+    import hashlib
+    exe = find_tool("minimap2", minimap2)
+    if exe is None:
+        raise RuntimeError("minimap2 not found (PATH, --minimap2, or conda env 'pretext-autocurate')")
+    os.makedirs(workdir, exist_ok=True)
+    key = hashlib.sha1("\n".join(sorted(names)).encode()).hexdigest()[:10]
+    paf = os.path.join(workdir, f"within_{key}.{preset}.paf")
+    if os.path.exists(paf) and os.path.getsize(paf) > 0:
+        return paf
+    want, sub = set(names), os.path.join(workdir, f"within_{key}.fa")
+    with _open(fasta) as f, open(sub, "w") as out:
+        keep = False
+        for line in f:
+            if line.startswith(">"):
+                keep = line[1:].split()[0] in want
+            if keep:
+                out.write(line)
+    tmp = paf + ".tmp"
+    try:
+        with open(tmp, "w") as out, open(paf + ".log", "w") as log:
+            # -X keeps secondary alignments (minimap2 refuses --secondary=no with it); the
+            # reader filters on mapping quality
+            subprocess.run([exe, "-x", preset, "-X", "-t", str(threads), sub, sub],
+                           stdout=out, stderr=log, check=True)
+    finally:
+        os.remove(sub)
+    os.replace(tmp, paf)
+    return paf
+
+
 @dataclass
 class Block:
     """One PAF line: query q[qs:qe] aligned to target t[ts:te] (bp, 0-based half-open, both on

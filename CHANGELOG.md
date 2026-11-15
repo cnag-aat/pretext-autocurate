@@ -8,6 +8,22 @@
   each copy contradict the other, the pair is flagged `arrangement_differs`. The rows give
   the contigs and the contradicted Mb. No change on the test genomes, where the contigs
   agree with the old choice.
+- Sex chromosomes from coverage and alignment (`sexchrom.py`). Hemizygous stretches (half
+  coverage, no alignment to the other haplotype) mark the sex-specific part of a sex
+  chromosome; a half-coverage stretch aligned into one is the other sex chromosome's
+  homologous part. Divergent heterozygous stretches of autosomes, also at half coverage but
+  aligned to each other, are no longer mistaken for them. Normal-coverage sequence next to
+  a sex-linked stretch is called a PAR when it has chromosome-level contact with it and
+  aligns to (or, without alignments, shares MQ0 reads with) the other sex chromosome's
+  end; with no contact it is another chromosome joined there, and the cut row says so.
+  Two sex-linked scaffolds in one haplotype are aligned to each other with `--fasta`
+  (`homology.align_within`). Hemizygous scaffolds in no pair join the chain of the sex
+  chromosome they contact. New rows `sex_linked_region`, `par`, `par_candidate`,
+  `sex_boundary`, `sex_chromosome_join`; new tracks `sex_chromosome` and `par`
+  (`OUT_DIR/tracks/`, added to the map with `--add-tracks`); `--sex-system` (XY, ZW, X0,
+  Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2) tags the copies (without it they are not labelled: that
+  needs species knowledge). A `sex_summary` row reports what was found, and when nothing
+  was, that a homogametic sample or homomorphic sex chromosomes look like autosomes.
 - Every module commented inline; `docs/HANDOFF.md` lists suggestions for further
   development.
 
