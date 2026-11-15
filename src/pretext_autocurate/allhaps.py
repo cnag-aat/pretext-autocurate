@@ -1095,6 +1095,85 @@ def _project(raw, idx, piece, layout, min_bp=100000, min_frac=0.1, clear=0.7):
     return (pos / tot, d, segs) if d else None
 
 
+def _contig_conflicts(raw, idx, pieces, layout, min_bp=50000):
+    """How much contiguous sequence of one copy contradicts the other copy's layout.
+
+    Curator's rule (2026-11-14): contigs outrank scaffold joins. The pieces of a copy meet at
+    gaps (scaffold joins or cut sites), so a layout's piece order is only as good as YaHS or
+    this tool; a contig is sequence the assembler put together. Each contig (gap-free stretch,
+    from the map's `gap` track) of `pieces` (one copy, inclusive pixel ranges) is followed
+    through its alignments into `layout` (the other copy, [(first px, last px, reversed)]).
+    Where one contig runs across two pieces of the layout, it must meet them in layout order
+    and orientation; if it does not, the layout is contradicted there.
+
+    Returns (contradicted bp, [(contig as 'scaffold:start-end Mb', layout pieces involved)]).
+    Only alignment stretches of at least `min_bp` count (repeats and small indels are noise);
+    rearrangements inside one layout piece are not counted (they say nothing about the
+    order of pieces)."""
+    gap = raw.graphs.get("gap")
+    bpp = raw.bp_per_pix
+    # the layout per scaffold of the other copy, as in `_project`, with each piece's rank k
+    ref, off = {}, 0
+    for k, (a, b, rev) in enumerate(layout):
+        ref.setdefault(raw.names[raw.orig_scaffold[a]], []).append(
+            (raw.rel_coord[a] * bpp, (raw.rel_coord[b] + 1) * bpp, off, rev, k))
+        off += b - a + 1
+    bad, where = 0.0, []
+    for a, b in pieces:
+        name = raw.names[raw.orig_scaffold[a]]
+        # contigs: runs of non-gap pixels inside the piece
+        stops = [a - 1] + ([q for q in range(a, b + 1) if gap[q] > 0] if gap is not None else []) + [b + 1]
+        for c0, c1 in zip(stops, stops[1:]):
+            if c1 - c0 < 2:
+                continue
+            lo, hi = raw.rel_coord[c0 + 1] * bpp, (raw.rel_coord[c1 - 1] + 1) * bpp
+            pts = []                    # (position along the contig bp, layout px, piece k, same way, bp)
+            for s0, e0, other, os_, oe_, st in idx.get(name, []):
+                if min(e0, hi) - max(s0, lo) < min_bp or other not in ref:
+                    continue
+                f0, f1 = (max(s0, lo) - s0) / (e0 - s0), (min(e0, hi) - s0) / (e0 - s0)
+                if not st:
+                    f0, f1 = 1 - f1, 1 - f0
+                o0, o1 = os_ + f0 * (oe_ - os_), os_ + f1 * (oe_ - os_)
+                for t0, t1, off_k, rev_k, k in ref[other]:
+                    w = min(o1, t1) - max(o0, t0)
+                    if w < min_bp:
+                        continue
+                    mid = (max(o0, t0) + min(o1, t1)) / 2
+                    g = (mid - os_) / max(oe_ - os_, 1)         # back along the block to this contig
+                    d_pos = s0 + (g if st else 1 - g) * (e0 - s0)
+                    l_px = off_k + ((t1 - mid) if rev_k else (mid - t0)) / bpp
+                    pts.append((d_pos, l_px, k, st != rev_k, w))
+            if len({x[2] for x in pts}) < 2:
+                continue                # the contig meets one layout piece: nothing to say about order
+            pts.sort()
+            # runs: consecutive stretches in the same layout piece
+            runs = []
+            for d_pos, l_px, k, fwd, w in pts:
+                if runs and runs[-1]["k"] == k:
+                    r = runs[-1]
+                    r["w"] += w
+                    r["fw"] += w if fwd else 0.0
+                    r["last"] = l_px
+                else:
+                    runs.append(dict(k=k, w=w, fw=w if fwd else 0.0, first=l_px, last=l_px))
+            # the contig's direction along the layout: by most aligned bp
+            tot = sum(r["w"] for r in runs)
+            sign = 1 if sum(r["fw"] for r in runs) >= tot / 2 else -1
+            hit = 0.0
+            for r in runs:              # a piece turned against the contig's direction
+                if (1 if r["fw"] >= r["w"] / 2 else -1) != sign:
+                    hit += r["w"]
+            for r1, r2 in zip(runs, runs[1:]):  # two pieces met out of layout order
+                if r1["k"] != r2["k"] and (r2["first"] - r1["last"]) * sign < 0:
+                    hit += min(r1["w"], r2["w"])
+            if hit > 0:
+                bad += hit
+                where.append((f"{name}:{lo / 1e6:.1f}-{hi / 1e6:.1f} Mb",
+                              sorted({raw.names[raw.orig_scaffold[layout[r['k']][0]]] for r in runs})))
+    return bad, where
+
+
 def arrange_pieces(sg, pieces, init, max_n=9, orient_gain=0.12, guide=None):
     """Order and orientation of the pieces of one chromosome copy that give the most contact
     between neighbouring ends (exact search over all orders and orientations).
@@ -1470,12 +1549,13 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                      + ("; orientation too close to call, left as it was, for: "
                         + ", ".join(span(*pieces[i]) for i in unclear) if unclear else "")))
     # With sequence alignments the other haplotype is the guide for order and orientation.
-    # Of the two copies of a chromosome the one in fewer pieces is the reference (arranged
-    # by end contact above); the pieces of the other are put in the order and orientation in
-    # which they align along it. End contact is the check: if it clearly prefers another
-    # arrangement, that may be a real difference between the haplotypes, so the contact
-    # arrangement stays and the row says so. (Curator: contigs outrank scaffold joins, so the
-    # copy that is contiguous at a disagreement should be the reference; not implemented yet.)
+    # Of the two copies of a chromosome one is the reference (arranged by end contact above);
+    # the pieces of the other are put in the order and orientation in which they align along
+    # it. The reference is the copy whose arrangement the other copy's contigs contradict
+    # less (curator: contigs outrank scaffold joins; `_contig_conflicts`), else the copy in
+    # fewer pieces. End contact is the check: if it clearly prefers another arrangement, that
+    # may be a real difference between the haplotypes, so the contact arrangement stays and
+    # the row says so.
     pair_of = {}
     for p in pairs:
         if p.kind not in ("extra", "merged"):
@@ -1483,6 +1563,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # how much more end contact the contact arrangement must score than the colinear one for
     # it to stay (higher = follow the alignment more readily)
     conflict_min = lv.at(0.3, 0.5, 0.8)
+    # contig-led reference: bp of one copy's contigs contradicting the other's arrangement
+    # needed to make that copy the reference, and by how much it must exceed the reverse
+    contig_min, contig_ratio = lv.at(1e6, 5e5, 2e5), 2.0
     # Scaffolds that are in no pair but align, over at least half their length, to one copy of
     # a chromosome: they belong in the chain of the other copy (their own haplotype), at the
     # place where they align.
@@ -1567,8 +1650,40 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         if p is None or u != p.a or p.b not in sol:
             continue
         size = lambda v: sum(b - a + 1 for a, b in sol[v]["pieces"])
-        # reference: the copy in fewer pieces, then the longer one
+        # reference: the copy whose arrangement the other copy's contigs contradict less
+        # (contigs outrank scaffold joins, curator 2026-11-14); when neither or both are
+        # contradicted, the copy in fewer pieces, then the longer one
         ref, oth = sorted((p.a, p.b), key=lambda v: (len(sol[v]["pieces"]), -size(v)))
+        lay = lambda v: arranged.get(v) or [(a, b, r) for (a, b), (_, r) in zip(sol[v]["pieces"], sol[v]["init"])]
+        # x_ref: bp of oth's contigs that contradict ref's layout; x_oth the other way round
+        x_ref, w_ref = _contig_conflicts(raw, block_idx, sol[oth]["pieces"], lay(ref))
+        x_oth, w_oth = _contig_conflicts(raw, block_idx, sol[ref]["pieces"], lay(oth))
+        ref_note, row0 = "", len(arr_rows)
+        fmt = lambda w: "; ".join(f"{c} across {', '.join(s)}" for c, s in w[:3]) + (" ..." if len(w) > 3 else "")
+        if x_ref >= contig_min and x_ref > contig_ratio * x_oth:
+            # oth's contigs say ref's pieces are out of order or turned: oth leads
+            ref_note = (f"; reference copy {pt.names[oth]}, not {pt.names[ref]} (fewer pieces): contigs of "
+                        f"{pt.names[oth]} contradict the arrangement of {pt.names[ref]} over {x_ref / 1e6:.2f} Mb "
+                        f"({fmt(w_ref)}), the other way round over {x_oth / 1e6:.2f} Mb; contigs outrank scaffold joins")
+            ref, oth = oth, ref
+        elif x_ref >= contig_min and x_oth >= contig_min:
+            # contigs of each copy contradict the other: a real difference or errors in both
+            arr_rows.append(dict(action="arrangement_differs", scaffold=pt.names[ref],
+                                 length_mb=round(npx_[ref] * pt.bp_per_pix / 1e6, 2), partner=pt.names[oth], strand="",
+                                 tag="", score=round(x_oth / 1e6, 2), next_best=round(x_ref / 1e6, 2),
+                                 evidence=f"contigs of each copy contradict the other's arrangement ({pt.names[oth]} "
+                                          f"against {pt.names[ref]}: {x_ref / 1e6:.2f} Mb, {fmt(w_ref)}; {pt.names[ref]} "
+                                          f"against {pt.names[oth]}: {x_oth / 1e6:.2f} Mb, {fmt(w_oth)}); "
+                                          f"{pt.names[ref]} (fewer pieces) kept as reference, to check"))
+            row0 += 1
+        elif x_ref >= contig_min:
+            ref_note = (f"; contigs of {pt.names[oth]} contradict the arrangement of {pt.names[ref]} over "
+                        f"{x_ref / 1e6:.2f} Mb ({fmt(w_ref)}) but its own contigs contradict {pt.names[oth]} as much: "
+                        f"{pt.names[ref]} (fewer pieces) kept as reference, to check")
+        elif x_oth >= contig_min:
+            # the usual case: the reference's contigs show where the other copy's joins are wrong
+            ref_note = (f"; contigs of {pt.names[ref]} contradict the arrangement of {pt.names[oth]} over "
+                        f"{x_oth / 1e6:.2f} Mb ({fmt(w_oth)}), and not the other way round: {pt.names[ref]} leads")
         so, sr = sol[oth], sol[ref]
         n0 = len(so["pieces"])                 # oth's own pieces; loose scaffolds are added after
         layout = arranged.get(ref) or [(a, b, r) for (a, b), (_, r) in zip(sr["pieces"], sr["init"])]
@@ -1653,6 +1768,11 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                         evidence="new order: " + ", ".join(span(P[i][0], P[i][1]) + (" reversed" if r else "") for i, r in aln)
                                  + f"; scaffolds that were in no pair are placed where they align along {pt.names[oth]} "
                                    "(sequence alignment); the pieces that were already there are unchanged"))
+        if ref_note:                       # say why this copy led, on every row it produced
+            idxs = set(range(row0, len(arr_rows))) | ({so["row"]} if so["row"] is not None else set())
+            for k in sorted(idxs):
+                if arr_rows[k] is not None:
+                    arr_rows[k]["evidence"] += ref_note
     arr_rows = [r for r in arr_rows if r is not None]
     # Second copies found above: not joined, kept at the end of their copy, tagged FalseDuplicate
     # (curator, 2026-11-14: sequence that is not in the contig is kept out, whatever made it).

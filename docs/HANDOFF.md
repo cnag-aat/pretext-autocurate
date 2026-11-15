@@ -177,11 +177,10 @@ Proposals, not curator decisions; roughly in order of expected value for curator
 the curator has already asked for are marked (curator).
 
 Curation quality, two-haplotype mode
-1. **Contig outranks scaffold join** (curator). When the two copies disagree, take as
-   reference the copy whose sequence is contiguous (no gap) at that point, not the copy in
-   fewer pieces. Everything needed is at hand: alignment blocks that span a gap in one copy
-   land inside a contig of the other (`gap` track, `_block_index`). Decide per
-   disagreement in `_project`, and say which copy led in the decisions table.
+1. ~~**Contig outranks scaffold join** (curator)~~ done 2026-11-15 (`_contig_conflicts`,
+   per pair, see PROGRESS). Still open: a pair where each copy is right in a different
+   place gets one reference only (flagged `arrangement_differs`); a merged layout taking
+   each disagreement from the contiguous copy would settle those.
 2. **Hemizygous and sex chromosomes from coverage** (curator). Chain half-coverage pieces
    by end contact alone (they have no homolog to guide them; the Troglobisium X is five
    pieces), find the boundary where a sex chromosome and an autosome are joined in one
@@ -244,8 +243,8 @@ Engineering
    ordered and oriented along the other copy (`_project`), and loose scaffolds go into the
    chain where they align. End contact is the check and Hi-C alone is the fallback
    (`merge_pairs`, `arrange_pieces`). See the last PROGRESS entries for scores against the
-   two Troglobisium curator states. Still to do: which copy is the reference when the two
-   disagree (a contig should outrank a scaffold join), merges checked by alignment,
+   two Troglobisium curator states. The reference copy is the one whose arrangement the other
+   copy's contigs contradict less (2026-11-15). Still to do: merges checked by alignment,
    hemizygous chromosomes built from several scaffolds, two haplotypes joined in one
    scaffold, pieces under 4 px.
 1. **allhaps mode is partial** (`allhaps.py`: telomere-at-gap sites decided as cut /

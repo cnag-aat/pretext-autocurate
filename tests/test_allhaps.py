@@ -241,6 +241,31 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
             self.assertGreaterEqual(sum("order and orientation follow the other haplotype" in v for v in re.values()), 3)
             # as the curator has it: H2_scaffold_70 forward, then H2_scaffold_67 reversed (here the whole chain is turned)
             self.assertRegex(re["H2_scaffold_67"], r"new order: H2_scaffold_67 0\.0-9\.1 Mb, H2_scaffold_70 0\.0-4\.4 Mb reversed;")
+            # contigs outrank scaffold joins: H2_scaffold_3 is one contig over 37.8 Mb that runs
+            # across H1_scaffold_68 and H1_scaffold_5 in the other order than assembled; it leads
+            self.assertIn("contigs of H2_scaffold_3 contradict the arrangement of H1_scaffold_5", re["H1_scaffold_5"])
+            self.assertIn("H2_scaffold_3 leads", re["H1_scaffold_5"])
+            self.assertRegex(re["H1_scaffold_5"], r"new order: H1_scaffold_68 0\.0-6\.3 Mb reversed, .*H1_scaffold_5 0\.0-51\.7 Mb;")
+
+    def test_contig_conflicts(self):
+        """`_contig_conflicts`: a contig of one copy contradicts a layout of the other copy that
+        meets its sequence out of order, and not the layout that follows it."""
+        paf = os.path.join(ROOT, "seed", "fixtures", "qqTroRaco.H2_vs_H1.asm5.paf")
+        if not os.path.exists(paf):
+            self.skipTest("no PAF")
+        from pretext_autocurate.allhaps import _contig_conflicts, _block_index
+        from pretext_autocurate.homology import read_paf
+        pt = self.pt
+        ix = {n: i for i, n in enumerate(pt.names)}
+        rng = lambda n: (int(pt.scaffold_start[ix[n]]), int(pt.scaffold_start[ix[n]] + pt.scaffold_npix[ix[n]] - 1))
+        idx = _block_index(read_paf(paf, min_mapq=0))
+        h3, h5, h68 = rng("H2_scaffold_3"), rng("H1_scaffold_5"), rng("H1_scaffold_68")
+        bad, where = _contig_conflicts(pt, idx, [h3], [(*h5, False), (*h68, False)])      # as assembled
+        self.assertGreater(bad, 5e6)
+        self.assertEqual(where[0][1], ["H1_scaffold_5", "H1_scaffold_68"])
+        ok, _ = _contig_conflicts(pt, idx, [h3], [(*h68, True), (*h5, False)])            # as H2_scaffold_3 has it
+        self.assertLess(ok, 0.5e6)
+        self.assertEqual(_contig_conflicts(pt, {}, [h3], [(*h5, False), (*h68, False)]), (0.0, []))
 
     def _sites(self, rows):
         """(action, pixel) of every break site, and the curator's cut pixels."""

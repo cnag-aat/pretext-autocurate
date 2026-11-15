@@ -89,7 +89,8 @@ Two haplotypes (`allhaps`):
 - **Pairs** homologous scaffolds and lays each pair side by side, parallel. The better copy
   (fewer gaps, telomeres, length; BUSCO as a tie-breaker) is `HAP1`.
 - **Orders and orients** the pieces of each chromosome copy: along the other haplotype when
-  the alignment is available, by end-to-end contact otherwise; pairs that are parts of one
+  the alignment is available (the copy whose contigs say so leads: contigs outrank scaffold
+  joins), by end-to-end contact otherwise; pairs that are parts of one
   chromosome are merged; scaffolds that align into a copy are joined where they align.
 - **Small scaffolds**: attached as `Unloc` where sequence and Hi-C agree, or joined when
   they continue a copy; a second copy of sequence its haplotype already has is tagged

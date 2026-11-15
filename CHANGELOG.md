@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Contigs outrank scaffold joins: with sequence alignments, the copy of a chromosome that
+  leads the other's order and orientation is the one whose arrangement the other copy's
+  contigs contradict less (before: always the copy in fewer pieces). When the contigs of
+  each copy contradict the other, the pair is flagged `arrangement_differs`. The rows give
+  the contigs and the contradicted Mb. No change on the test genomes, where the contigs
+  agree with the old choice.
+- Every module commented inline; `docs/HANDOFF.md` lists suggestions for further
+  development.
+
 ## 1.1.0 (2026-11-14)
 
 Evidence tracks: telomeres by strand, repeats, BUSCO pairs.

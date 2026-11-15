@@ -1338,3 +1338,32 @@ minimap2 for the haplotype alignments.
   header, but PretextView's header hash also covers the file name, so a savestate for
   `X.pretext` does not load on `X.tracks.pretext`. That is why `run` writes a separate
   savestate for each copy (the code always did; the note was wrong).
+
+## 2026-11-15: contigs outrank scaffold joins (reference copy per pair)
+
+Curator's rule (2026-11-14): when the two copies of a chromosome disagree, the copy that is
+contiguous sequence there is the reference, not the copy in fewer pieces.
+
+- `_contig_conflicts(raw, idx, pieces, layout)`: each contig (gap-free stretch, from the
+  map's `gap` track) of one copy is followed through its alignments (stretches of 50 kb or
+  more) into the other copy's layout. A contig that runs across two layout pieces must meet
+  them in layout order and orientation; otherwise the aligned bp count as contradicted.
+  Rearrangements inside one layout piece are not counted.
+- Phase 2 (`curate_allhaps`): both directions are measured for each pair. The reference is
+  the copy the other's contigs contradict less, when that is at least `contig_min`
+  (`Level`: 1 / 0.5 / 0.2 Mb) and twice the reverse; when both exceed `contig_min` the
+  fewer-pieces copy stays and the pair is flagged `arrangement_differs`. Every row of the
+  pair says which contigs led.
+- Troglobisium (map + PAF + TTAGG): contradictions in 10 pairs, up to 12.6 Mb (one 37.8 Mb
+  contig of H2_scaffold_3 runs across H1_scaffold_68 and H1_scaffold_5 the other way round
+  from the assembly). In every case the contradicting contigs belong to the copy in fewer
+  pieces, which was already the reference: decisions and savestate unchanged, 21 of 29 tool
+  junctions in the final curation as before. The rows now carry the contig evidence
+  (rearrangements of H1_scaffold_5, H2_scaffold_47, H1_scaffold_10, H1_scaffold_63).
+- The swap path was exercised by forcing the measurement the other way on H1_scaffold_10 /
+  H2_scaffold_27: H1_scaffold_10 became the reference and the row explains why. No fixture
+  genome needs it yet; it is for YaHS joins in the copy with fewer pieces that a contig of
+  the other copy contradicts.
+- Test `test_contig_conflicts`: H2_scaffold_3 contradicts H1_scaffold_5 + H1_scaffold_68 as
+  assembled by over 5 Mb, the arrangement the tool applies by under 0.5 Mb; the
+  H1_scaffold_5 rearrange row names H2_scaffold_3 as leading.
