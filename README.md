@@ -113,8 +113,10 @@ Two haplotypes (`allhaps`):
   the alignment is available (the copy whose contigs say so leads: contigs outrank scaffold
   joins), by end-to-end contact otherwise; pairs that are parts of one
   chromosome are merged; scaffolds that align into a copy are joined where they align.
-- **Small scaffolds**: attached as `Unloc` where sequence and Hi-C agree, or joined when
-  they continue a copy; a second copy of sequence its haplotype already has is tagged
+- **Small scaffolds**: attached as `Unloc` where sequence and Hi-C agree, or, for pieces too
+  small to weigh contact ratios, where their high-MQ signal is unique to one homolog pair
+  (MQ0 without a high-MQ map); joined when they continue a copy, and large ones placed in
+  their chromosome where their ends touch it clearly best; a second copy of sequence its haplotype already has is tagged
   `FalseDuplicate`; repeat-rich scaffolds are judged on their non-repetitive part.
 - **Sex chromosomes** (from the `coverage` track, and the alignment when given): a
   stretch at about half coverage that does not align to the other haplotype is

@@ -260,8 +260,15 @@ Validation, so the rules keep improving
     savestate in `seed/fixtures/`, add an entry to the cases file, run
     `python3 tools/score_all.py --only NAME`. What the baseline points at:
     (a) Unloc tags of the tool and the curator almost never coincide on the two-haplotype
-        genomes (0% on Troglobisium, 0-11% on the owl, with similar totals): the tool tags
-        different pieces; look at which;
+        genomes (0% on Troglobisium, 0-11% on the owl, with similar totals). Looked at
+        2026-11-16 (PROGRESS): the tool's few Unlocs on Troglobisium were large pieces the
+        curator joins (now placed by end contact when clear), and the curator's are small
+        pieces the tool never weighed (under 20 px without sequence evidence). Curator's rule
+        now implemented: a small piece is an Unloc when its high-MQ signal is unique to one
+        homolog pair (MQ0 uniqueness stronger; alone without a high-MQ map). Troglobisium
+        has no high-MQ map in the fixtures; the curator's small Unlocs there are not unique
+        at MQ0, so the scores will only move with that map. The curations predate the rule
+        (curator: they are not ground truth);
     (b) HAP1 agrees with the owl curator's own curation (savestate_6) on 53% of the bp: not
         a disagreement. That curation kept each haplotype as assembled; the per-chromosome
         choice of the better copy as HAP1 is the curator's rule implemented in the tool and

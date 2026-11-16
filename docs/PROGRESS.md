@@ -1803,3 +1803,57 @@ biased towards it); Troglobisium savestate_final.
   each haplotype as assembled, while the tool tags the better copy of each chromosome HAP1
   (the curator's rule, not yet used in their own curations; curator, 2026-11-16). Against
   their corrections of the tool, which follow the rule: 91%.
+
+## 2026-11-16: Unloc disagreement (HANDOFF 12a)
+
+Curator: the curations are human work done by zooming and scrolling; they miss things and
+predate some rules. The tool should follow the stated rules consistently.
+
+What the two sides tag (scratchpad `unlocs.py`, level 0.5)
+- Troglobisium: the curator has 47 Unlocs, all small (0.07-2 Mb, 1-30 px); the tool left 36
+  of them unpainted, never weighed: without the small-scaffold alignment (`--no-small-align`)
+  only Hi-C can place them, and Hi-C alone was only tried from 20 px (1.3 Mb). The tool's 4
+  Unlocs are large (2-10 Mb); the curator joined all of them into chromosomes.
+- Owl: of the curator's 6 Unlocs (savestate_6), 3 the tool tags FalseDuplicate (100% of each
+  aligns to sequence its haplotype already has; BUSCO genes doubled), 1 agrees; the tool's
+  one large Unloc, H1_scaffold_31 (5 Mb), the curator left unplaced.
+
+Small pieces by Hi-C (scratchpad `smallhic.py`, `smallhi.py`)
+- MQ0 contact ratio does not separate the curator's small Unlocs from the small scaffolds
+  they left unplaced (Troglobisium, < 20 px: medians 2.3 and 2.2; coverage 1.7 and 2.2): at
+  1-3 px and ratio >= 2.5, 164 would be placed, 7 in the curator's chromosome.
+- Curator's rule (2026-11-16): a small piece is an Unloc when its high-MQ signal is unique
+  to one homolog pair; unique at MQ0 as well is stronger evidence. On the owl the curator's
+  small Unlocs are not unique at MQ10 (ratio 1.0-5; they rest on sequence), and many unique
+  ones were left unplaced: the curation predates the rule. Extreme ratios (1e5) come with
+  a handful of reads: uniqueness needs a floor on the signal.
+
+Changes (`allhaps.place_small`, `curate_allhaps` phase 1)
+- Pieces under `hic_alone_px` without sequence evidence: Unloc when the high-MQ contact of the
+  best homolog pair is `hi_unique` (10 / 5 / 3 by level) times the next pair and at least
+  0.5 mean contact (MQ0 agreeing if it is unique too); without a high-MQ map, MQ0 uniqueness
+  (10 / 6 / 4). The repeat and coverage guards apply; if the rule does not reach an Unloc it
+  says nothing (no candidate rows; other routes, e.g. alignment into a copy, stay open:
+  without that, H2_scaffold_78 lost its alignment-based join).
+- Attached pieces large enough for the arrangement search, when the copy itself is not
+  rearranged: placed where their ends touch the copy best (copy's own pieces as assembled),
+  if the best new end contact is >= `attach_link` (0.5 / 0.3 / 0.15), the place beats any
+  other by `attach_margin` (0.3 / 0.15 / 0.05), and the orientation stays as assembled when
+  turning it gains less than the usual orientation margin. Troglobisium: H1_scaffold_67
+  placed after H1_scaffold_57 as the curator did (1.26 against 0.47 before it; 1.26 / 1.22
+  reversed / forward: as assembled); H2_scaffold_65 stays an Unloc (0.79 after against 0.77
+  before H2_scaffold_66: too close). Owl: H1_scaffold_31 placed after H1_scaffold_40 (0.44,
+  nothing comparable elsewhere; the curator left it unplaced: worth a look).
+
+Scores (`tools/score_all.py`), against v1.2.0
+| genome | level | junctions supported | reproduced | Unlocs (tool) |
+|---|---|---|---|---|
+| qqTroRaco | 0 / 0.5 / 1 | 20/26, 25/33, 30/43 (was 19/25, 24/32, 29/42) | 25, 30, 34 of 53 (unchanged) | 10 at 0.5 (was 4) |
+| bAegFun | 0 / 0.5 / 1 | unchanged | unchanged | 4 at 0.5 (was 3) |
+
+New small Unlocs: Troglobisium 7 (2-15 px, MQ0 unique 6-16x; no high-MQ map; 17 in a
+map-only run, where fewer pieces are paired), owl 2 (1-2 px, MQ10 unique 7-8x). Tests
+updated: pieces the curator left unplaced are counted, not failed; Unloc/FalseDuplicate
+pieces may sit between the two copies of a pair. The curator had left them unplaced: possible misses to check, or the rule
+needs tuning. Unloc agreement with the curations stays low (0% / 11%) because those
+curations do not follow the rule.

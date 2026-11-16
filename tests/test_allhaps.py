@@ -100,8 +100,12 @@ class TestAllhaps(unittest.TestCase):
             if paint.get(i):
                 ids[paint[i]].add(self.pt.names[c.scaffold].split("_")[0])
         self.assertTrue(all(len(v) == 1 for v in ids.values()))                        # one prefix per superscaffold
-        # the two members of a pair are adjacent in the map
-        pos = {self.pt.names[c.scaffold]: i for i, c in enumerate(ms.contigs)}
+        # the two members of a pair are adjacent in the map; pieces set aside at the end of a copy
+        # (Unloc, FalseDuplicate) may sit between them
+        aside = {i for i, c in enumerate(ms.contigs)
+                 if {"Unloc", "FalseDuplicate"} & set(self.st.tag_names(flags.get(i, 0)))}
+        order = [i for i in range(len(ms.contigs)) if i not in aside]
+        pos = {self.pt.names[ms.contigs[i].scaffold]: k for k, i in enumerate(order)}
         for r in self.rows:
             if r["action"] == "pair" and ":" not in r["scaffold"] + r["partner"]:
                 self.assertLessEqual(abs(pos[r["scaffold"]] - pos[r["partner"]]), 2, r)   # 2: an inverted end piece
@@ -168,12 +172,26 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
         self.assertTrue(any(r["tag"] == "HAP1/HAP1" and "H2_scaffold_4" in r["scaffold"] + r["partner"] for r in xy))    # X with Y
 
     def test_unlocs_join_the_curators_chromosome(self):
+        """Pieces the curator placed go to the curator's chromosome. Pieces the curator left
+        unplaced may be placed by the curator's own rule (a small piece whose signal is unique
+        to one homolog pair; the curation predates it): only counted."""
         un = [r for r in self.rows if r["action"] in ("unloc", "join")]
         self.assertGreaterEqual(len(un), 9)
-        for r in un:
+        placed = [r for r in un if self.groups[r["scaffold"].split(":")[0]]]
+        mate = {}                                                       # the tool's homolog pairs
+        for r in self.rows:
+            if r["action"] in ("pair", "pair_unequal"):
+                mate[r["scaffold"]], mate[r["partner"]] = r["partner"], r["scaffold"]
+        for r in placed:
             g = set(self.groups[r["partner"].split(":")[0]])
+            g |= set(self.groups[mate.get(r["partner"], "").split(":")[0]])   # the other copy of the tool's pair
             g |= {self.partner.get(x) for x in g}                       # either copy of the chromosome
             self.assertTrue(set(self.groups[r["scaffold"].split(":")[0]]) & g, r)
+        new = [r for r in un if r not in placed]
+        self.assertTrue(all("unique to the chromosome" in r["evidence"] for r in new), new)
+        # map only (no alignment, so more pieces unpaired): 17 small pieces whose MQ0 signal is
+        # unique to one homolog pair, all left unplaced by the curator (2026-11-16)
+        self.assertLessEqual(len(new), 20)
 
     def test_rearrangements(self):
         """Pieces of one chromosome copy are ordered and oriented by end contact (the other
@@ -365,7 +383,10 @@ class TestAllhapsSequence(unittest.TestCase):
         # H1_scaffold_168 (0.5 Mb, in no pair) aligns to H2_scaffold_5 where H1_scaffold_6 has a gap with
         # no contact across and no sequence: it goes in there. Scaffolds that align where their own
         # copy already has sequence (H2_scaffold_43, H2_scaffold_70) are duplicates and stay out.
-        self.assertEqual(set(re), {"H2_scaffold_8", "H1_scaffold_6", "H2_scaffold_40"})
+        # H1_scaffold_40: H1_scaffold_31 (5 Mb, attached to it) placed at its end by end contact
+        # (2026-11-16; the curator had left H1_scaffold_31 unplaced)
+        self.assertEqual(set(re), {"H2_scaffold_8", "H1_scaffold_6", "H2_scaffold_40", "H1_scaffold_40"})
+        self.assertIn("H1_scaffold_31 placed", re["H1_scaffold_40"])
         self.assertTrue(re["H2_scaffold_40"].startswith("new order: H1_scaffold_44 0.0-2.0 Mb, H2_scaffold_40 0.0-2.6 Mb;"))
         # H1_scaffold_31: its homologs are both H1_ (H1_scaffold_33 / H1_scaffold_40); it goes to the
         # shorter copy, which is tagged HAP2, to balance the haplotypes (curator, 2026-11-14)
@@ -385,7 +406,9 @@ class TestAllhapsSequence(unittest.TestCase):
                         ("H2_scaffold_70", "H2_scaffold_30:2"), ("H1_scaffold_44", "H2_scaffold_40"),
                         ("H1_scaffold_209", "H2_scaffold_13")):
             self.assertEqual(un.get(s), copy, s)
-        self.assertLessEqual(len(un), 20)
+        # a ceiling against over-placing; the small-piece rule (high-MQ signal unique to one homolog
+        # pair, curator 2026-11-16) adds H1_scaffold_320 and H1_scaffold_355
+        self.assertLessEqual(len(un), 24)
         t_rows, _, _ = curate_allhaps(self.pt, phasing="trio", hi=hi, blocks=read_paf(PAF, min_mapq=0),
                                       small_blocks=read_paf(sp, min_mapq=0), do_cuts=False)
         self.assertTrue(all(r["scaffold"][:2] == r["partner"][:2] for r in t_rows

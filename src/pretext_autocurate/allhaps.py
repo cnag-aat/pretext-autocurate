@@ -637,7 +637,7 @@ def same_prefix_pairs(pt, info, small_blocks, min_bp=500000, frac_min=0.5):
 
 def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_margin=2.0, hic_agree=1.5,
                 hic_alone=2.5, hic_alone_px=20, hi_margin=2.0, repeat_cov=1.5, dense_min=0.5, repeat_frac=0.9,
-                phasing="hic", copy_margin=1.5, cis_frac=0.2):
+                phasing="hic", copy_margin=1.5, cis_frac=0.2, hi_unique=5.0, mq0_unique=6.0, unique_floor=0.5):
     """Which chromosome each remaining small scaffold belongs to.
 
     Two independent lines of evidence: sequence (share of the scaffold that aligns to a
@@ -665,6 +665,12 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
     `repeat_frac` repeat-track share that make a Hi-C-only call a candidate; `dense_min`
     match density of a non-repetitive alignment; `copy_margin` high-MQ contact ratio to pick
     a copy; `cis_frac` least contact with its own haplotype's copy, relative to the other.
+
+    Pieces smaller than `hic_alone_px` (curator, 2026-11-16): unlocalised when their signal
+    on the high-MQ map is unique to one homolog pair (best pair `hi_unique` times the next,
+    and at least `unique_floor` mean contact, so that a handful of reads does not count);
+    unique on the MQ0 map as well is stronger evidence, and without a high-MQ map it is the
+    evidence (`mq0_unique` times the next pair, same floor).
 
     Returns a list of dicts (u, copy, action, third_copy, evidence, extend, score, ratio)."""
     npx, start, hap = pt.scaffold_npix, pt.scaffold_start, info["hap"]
@@ -752,8 +758,8 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
             return None
         return (X, x_end, u_end)
 
-    # only scaffolds that either line of evidence could place
-    need = [u for u in small if npx[u] >= hic_alone_px or (u in seq and seq[u][0] >= seq_min)]
+    # every small scaffold: sequence, Hi-C alone (large enough), or a unique signal (small)
+    need = list(small)
     name = lambda k: "/".join(pt.names[v] for v in copies[k])
     cs = np.concatenate(([0.0], np.zeros(pt.npix)))
     units = sorted(chrom)
@@ -781,7 +787,7 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
         r0 = sc0[0][0] / max(sc0[1][0], 1e-6)      # MQ0 contact, best chromosome over the next
         s = seq.get(u)
         seq_ok = s is not None and s[0] >= seq_min and s[0] >= seq_margin * s[1]
-        k, action, why = None, None, ""
+        k, action, why, small_route = None, None, "", False
         # which chromosome: sequence first (unloc if Hi-C agrees, else candidate); Hi-C alone
         # only when strong, not contradicted by sequence, and confirmed on the high-MQ map
         if seq_ok:
@@ -807,6 +813,25 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
             if ok:
                 action = "unloc"
                 why = f"Hi-C alone: MQ0 contact with the chromosome {name(k)} is {r0:.1f}x the next chromosome{extra}"
+        elif npx[u] < hic_alone_px and not (s is not None and s[0] >= seq_min):
+            # too small to weigh contact ratios: unlocalised only where its signal is unique to
+            # one homolog pair, on the high-MQ map (curator), or on the MQ0 map without one
+            small_route = True
+            u0 = r0 >= mq0_unique and sc0[0][0] >= unique_floor
+            if sgh is not None:
+                sch, _ = contact(sgh, u)
+                rh = sch[0][0] / max(sch[1][0], 1e-6)
+                if rh >= hi_unique and sch[0][0] >= unique_floor and (sch[0][1] == sc0[0][1] or not u0):
+                    k = sch[0][1]
+                    action = "unloc"
+                    why = (f"small ({npx[u]} px): its high-MQ signal is unique to the chromosome {name(k)} "
+                           f"({min(rh, 99):.0f}x the next pair)"
+                           + (f", and so is its MQ0 signal ({min(r0, 99):.0f}x)" if u0 and sc0[0][1] == k else ""))
+            elif u0:
+                k = sc0[0][1]
+                action = "unloc"
+                why = (f"small ({npx[u]} px): its MQ0 signal is unique to the chromosome {name(k)} "
+                       f"({min(r0, 99):.0f}x the next pair; no high-MQ map)")
         if action is None:
             continue
         if action == "unloc" and rept is not None and not seq_ok:
@@ -822,6 +847,10 @@ def place_small(pt, pairs, info, small_blocks=None, hi=None, seq_min=0.5, seq_ma
             if cv >= repeat_cov:
                 action = "candidate"
                 why += f"; but its coverage is {cv:.1f}x a normal copy (collapsed repeats): not moved"
+        if small_route and action != "unloc":
+            # the small-piece rule either places it or says nothing: no candidate rows for
+            # repeat-like pieces, and the other routes (alignment into a copy) stay open
+            continue
         # which copy of chromosome k (rules in the docstring); own: the copies with u's prefix
         a_, b_ = copies[k]
         own = [v for v in (a_, b_) if hap[v] == hap[u]]
@@ -1542,7 +1571,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         pairs += same_prefix_pairs(pt, info, small_blocks)
     # 2. small scaffolds: which chromosome and copy (unloc / candidate / extends a copy)
     small_calls = place_small(pt, pairs, info, small_blocks, hi, phasing=phasing, seq_min=lv.at(0.6, 0.5, 0.4),
-                              hic_agree=lv.at(2.0, 1.5, 1.2), hic_alone=lv.at(3.5, 2.5, 2.0)) if do_place else []
+                              hic_agree=lv.at(2.0, 1.5, 1.2), hic_alone=lv.at(3.5, 2.5, 2.0),
+                              hi_unique=lv.at(10.0, 5.0, 3.0), mq0_unique=lv.at(10.0, 6.0, 4.0)) if do_place else []
     attach = {}
     for c in small_calls:
         if c["action"] == "unloc":
@@ -1559,6 +1589,12 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     # chain_px: smallest attached piece (px) put into the search; gain_min: least gain in end
     # contact over the assembled arrangement for a rearrangement to be applied
     chain_px, gain_min = lv.at(60, 40, 20), lv.at(0.3, 0.15, 0.05)
+    # attach_link: least end contact (of adjacent sequence) for an attached piece to be placed
+    # in its copy rather than left as an unloc at its end
+    attach_link = lv.at(0.5, 0.3, 0.15)
+    # attach_margin: how much better the chosen place must be than the best other place;
+    # orient_gain_: least gain for a placed piece to be turned round (as in arrange_pieces)
+    attach_margin, orient_gain_ = lv.at(0.3, 0.15, 0.05), lv.at(0.2, 0.12, 0.05)
     mate_of = {}
     for p in pairs:
         if p.kind != "extra":
@@ -1689,13 +1725,14 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         # another (Troglobisium: the curator put H2_scaffold_46 0-8.59 Mb, hemizygous, into the
         # X's gap at H1_scaffold_1 109.78 Mb). The search is exact, so at most 9 pieces; an
         # extra that does not fit split goes in whole, or not at all.
-        kept = []
+        kept, n_own, block_of = [], len(pieces), {}
         for v in others:
             sp = split(v)
             if len(pieces) + len(sp) > 9:
                 sp = [(int(start_[v]), int(start_[v] + npx_[v] - 1))]
             if len(pieces) + len(sp) > 9:
                 break
+            block_of[v] = list(range(len(pieces), len(pieces) + len(sp)))
             pieces += sp
             kept.append(v)
         others = kept
@@ -1726,8 +1763,52 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         arr, best, was, adj, unclear, guided = arrange_pieces(sg_arr, pieces, init, orient_gain=lv.at(0.2, 0.12, 0.05),
                                                       guide=guide)
         sol[u].update(adj=adj, best=best, was=was)
+        placed_only = None
         if not forced and (arr == init or best - was < gain_min):
-            continue                               # not enough gain: left as assembled
+            # Not enough gain to rearrange the copy itself. Its attached pieces large enough
+            # to carry an end signal still belong in it, not at its end as unlocs (curator's
+            # Troglobisium curation joins all four of them, 2-10 Mb): each goes, largest first,
+            # where its ends touch the copy's (left as assembled) best, if one of its two new
+            # neighbours touches it at `attach_link` of adjacent sequence or more.
+            ins = [v for v in others if v in block_of and v not in extra_of.get(u, [])]
+            if not ins:
+                continue                           # nothing to place: left as assembled
+            tot = lambda a_: sum(adj[(x, rx, y, ry)] for (x, rx), (y, ry) in zip(a_, a_[1:]))
+            cur, notes = list(init[:n_own]), []
+            for v in ins:
+                blk = [init[i] for i in block_of[v]]
+                cands = []                         # (score, position, flipped, arrangement, best new link)
+                for pos in range(len(cur) + 1):
+                    for flip in (False, True):
+                        b = [(i, not r) for i, r in reversed(blk)] if flip else blk
+                        cand = cur[:pos] + b + cur[pos:]
+                        left = adj[(cur[pos - 1][0], cur[pos - 1][1], b[0][0], b[0][1])] if pos > 0 else 0.0
+                        right = adj[(b[-1][0], b[-1][1], cur[pos][0], cur[pos][1])] if pos < len(cur) else 0.0
+                        cands.append((tot(cand), pos, flip, cand, max(left, right)))
+                cands.sort(key=lambda c: -c[0])
+                sc, pos, flip, cand, link = cands[0]
+                alt = next((c[0] for c in cands if c[1] != pos), 0.0)        # best elsewhere
+                same = next(c for c in cands if c[1] == pos and c[2] != flip)  # same place, turned
+                if link < attach_link:
+                    notes.append(f"{pt.names[v]} left as an unloc (best end contact {link:.2f})")
+                    continue
+                if sc - alt < attach_margin:
+                    notes.append(f"{pt.names[v]} left as an unloc (where it goes is too close to call: "
+                                 f"{sc:.2f} against {alt:.2f} elsewhere)")
+                    continue
+                turned = ""
+                if flip and sc - same[0] < orient_gain_:
+                    cand = same[3]                 # orientation too close to call: as assembled
+                    turned = f", orientation too close to call ({sc:.2f} / {same[0]:.2f}), as assembled"
+                cur = cand
+                notes.append(f"{pt.names[v]} placed (end contact {link:.2f}, {sc - alt:.2f} better than "
+                             f"elsewhere{turned})")
+            if len(cur) == n_own:
+                continue
+            arr, placed_only = cur, notes
+            others = [v for v in others if any(i in dict(arr) for i in block_of.get(v, []))]
+            sol[u]["others"] = others
+            best = tot(arr)
         sol[u]["row"] = len(arr_rows)
         arranged[u] = [(pieces[i][0], pieces[i][1], r) for i, r in arr]
         for v in others + units[1:]:
@@ -1738,12 +1819,14 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
             strand="", tag="", score=round(best, 2), next_best=round(was, 2),
             evidence="new order: " + ", ".join(span(pieces[i][0], pieces[i][1]) + (" reversed" if r else "") for i, r in arr)
                      + "; contact between neighbouring ends " + "/".join(f"{x:.2f}" for x in links)
-                     + f" (sum {best:.2f}) against {was:.2f} as assembled"
+                     + (f" (sum {best:.2f}) against {was:.2f} as assembled" if placed_only is None else
+                        "; the copy's own pieces as assembled, its attached pieces put where their ends touch it "
+                        "best: " + ", ".join(placed_only))
                      + ("; oriented by the other haplotype ("
                         + ("sequence alignment" if any(i in by_seq for i in guided) else "Hi-C homology line") + "): "
-                        + ", ".join(span(*pieces[i]) for i in guided) if guided else "")
+                        + ", ".join(span(*pieces[i]) for i in guided) if guided and placed_only is None else "")
                      + ("; orientation too close to call, left as it was, for: "
-                        + ", ".join(span(*pieces[i]) for i in unclear) if unclear else "")))
+                        + ", ".join(span(*pieces[i]) for i in unclear) if unclear and placed_only is None else "")))
     # With sequence alignments the other haplotype is the guide for order and orientation.
     # Of the two copies of a chromosome one is the reference (arranged by end contact above);
     # the pieces of the other are put in the order and orientation in which they align along

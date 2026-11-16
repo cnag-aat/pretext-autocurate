@@ -6,6 +6,14 @@
   runs the tool on every test genome and scores it against the curators' savestates
   (junctions, breaks, chromosome grouping, tags by bp, edits, review items) in one table.
   Baseline for v1.2.0 in `docs/PROGRESS.md`.
+- Small scaffolds (under 20 px, no sequence evidence) are tagged Unloc when their high-MQ
+  signal is unique to one homolog pair (curator's rule; MQ0 uniqueness strengthens it, and
+  stands alone without a high-MQ map), with a floor on the signal so that a few reads do not
+  count. Before, Hi-C alone was never tried below 20 px.
+- Large attached pieces are placed in their chromosome by end contact (when the place and the
+  contact are clear) instead of being left as Unlocs at its end, also when the chromosome's
+  own pieces are not rearranged. Troglobisium: 1 more junction agrees with the curation at
+  each level, none lost.
 
 ## 1.2.0 (2026-11-16)
 
