@@ -1558,20 +1558,34 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
         if u in host_of:
             continue
         units = [u] + sorted(members.get(u, []), key=lambda v: -npx_[v])
-        # pieces: each unit split at its kept / tip-inverted sites
-        pieces = []
-        for v in units:
+
+        def split(v):
+            """Unit v as pieces split at its kept / tip-inverted sites (gaps where the sides
+            belong to one chromosome but the order is not certain)."""
             a, b = int(start_[v]), int(start_[v] + npx_[v] - 1)
-            lo = a
+            out, lo = [], a
             for q in [q for q in soft if a <= q < b]:
                 if q - lo >= 4 and b - q > 4:              # no pieces of a few pixels
-                    pieces.append((lo, q))
+                    out.append((lo, q))
                     lo = q + 1
-            pieces.append((lo, b))
+            return out + [(lo, b)]
+        pieces = [p for v in units for p in split(v)]
         others = sorted([c["u"] for c in attach.get(u, []) if npx_[c["u"]] >= chain_px] +
                         [v for v in extra_of.get(u, []) if npx_[v] >= chain_px], key=lambda v: -npx_[v])
-        others = others[:max(0, 9 - len(pieces))]              # the search is exact, so at most 9 pieces
-        pieces += [(int(start_[v]), int(start_[v] + npx_[v] - 1)) for v in others]
+        # Extra pieces are split at their kept sites as well, so that one can go into a gap of
+        # another (Troglobisium: the curator put H2_scaffold_46 0-8.59 Mb, hemizygous, into the
+        # X's gap at H1_scaffold_1 109.78 Mb). The search is exact, so at most 9 pieces; an
+        # extra that does not fit split goes in whole, or not at all.
+        kept = []
+        for v in others:
+            sp = split(v)
+            if len(pieces) + len(sp) > 9:
+                sp = [(int(start_[v]), int(start_[v] + npx_[v] - 1))]
+            if len(pieces) + len(sp) > 9:
+                break
+            pieces += sp
+            kept.append(v)
+        others = kept
         # a merged chromosome is laid out as one in any case, and so is a sex chromosome with
         # hemizygous pieces put in its chain
         forced = len(units) > 1 or (u in sex_forced and any(v in others for v in extra_of.get(u, [])))

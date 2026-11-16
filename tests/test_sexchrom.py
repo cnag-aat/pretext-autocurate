@@ -157,6 +157,13 @@ class TestTroglobisium(unittest.TestCase):
                  or (self.pt.names[c.scaffold] == "H1_scaffold_1" and _mb(self.pt, ms.pix[c.start]) > 30)}
         self.assertEqual(len(x_ids), 1)
         self.assertNotIn(None, x_ids)
+        # H2_scaffold_46 split at its gap (8.6 Mb), its first part in H1_scaffold_1's gap at
+        # 109.8 Mb, as the curator laid out the X
+        x = [(self.pt.names[c.scaffold], round(_mb(self.pt, int(ms.pix[c.start:c.start + c.length].min()))),
+              round(_mb(self.pt, int(ms.pix[c.start:c.start + c.length].max())))) for i, c in enumerate(ms.contigs)
+             if paint.get(i) in x_ids]
+        self.assertEqual(x, [("H1_scaffold_1", 25, 58), ("H1_scaffold_1", 58, 110), ("H2_scaffold_46", 0, 9),
+                             ("H1_scaffold_1", 110, 119), ("H2_scaffold_46", 9, 23)])
 
 
 @unittest.skipUnless(os.path.exists(OWL) and os.path.exists(OWL_PAF), "missing fixture")

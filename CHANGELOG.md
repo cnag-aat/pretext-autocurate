@@ -24,6 +24,11 @@
   Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2) tags the copies (without it they are not labelled: that
   needs species knowledge). A `sex_summary` row reports what was found, and when nothing
   was, that a homogametic sample or homomorphic sex chromosomes look like autosomes.
+- Extra pieces of a chromosome copy (scaffolds aligned or chained into it) are split at
+  their kept gaps before order and orientation are searched, so a piece can go into
+  another's gap. Troglobisium: the X is laid out as the curator did (H2_scaffold_46 split
+  at 8.6 Mb, its first part in H1_scaffold_1's gap at 109.8 Mb); 24 of 32 tool junctions
+  in the curation (21 of 30 before). No change on the owl.
 - Every module commented inline; `docs/HANDOFF.md` lists suggestions for further
   development.
 

@@ -185,11 +185,11 @@ Curation quality, two-haplotype mode
 2. ~~**Hemizygous and sex chromosomes from coverage** (curator)~~ done 2026-11-15
    (`sexchrom.py`, see PROGRESS): sex-linked stretches, PARs, coverage steps where another
    chromosome is joined, hemizygous pieces chained by contact, `sex_chromosome` / `par`
-   tracks, tags with `--sex-system` (XY, ZW, X0, Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2). Still
-   open: interleaving hemizygous pieces (the curator split H2_scaffold_46 at its gap at
-   8.59 Mb and put the first part into H1_scaffold_1's gap at 109.78 Mb; the tool places
-   H2_scaffold_46 whole at the end of the X): split chained pieces at their gaps and place
-   the parts by end contact. Which copy is which without `--sex-system` is left to the
+   tracks, tags with `--sex-system` (XY, ZW, X0, Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2); chained
+   pieces split at their kept gaps so they can interleave (the Troglobisium X as the
+   curator laid it out). Still open: only gaps with a `keep` site are split points, so a
+   piece belonging in a gap the cut detection did not look at stays whole; phase 1 searches
+   at most 9 pieces, and extras beyond that go in whole. Which copy is which without `--sex-system` is left to the
    curator (needs species knowledge). Homomorphic sex chromosomes, and any sample of the
    homogametic sex, show no hemizygous stretch and are paired as autosomes (the
    `sex_summary` row says so); SCINKD-style k-mers would need reads of both sexes.

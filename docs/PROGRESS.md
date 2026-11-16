@@ -1441,6 +1441,28 @@ Results
 
 Next
 - Interleaving hemizygous pieces: split a chained piece at its gaps and place the parts by
-  end contact (the Troglobisium X above).
+  end contact (the Troglobisium X above). Done, next entry.
 - Homomorphic sex chromosomes are not found from coverage; that would need another signal
   (k-mers from reads of both sexes, as in SCINKD), which is not among this tool's inputs.
+
+## 2026-11-15: extra pieces split at their kept gaps (interleaving)
+
+Curator's X in Troglobisium (savestate_final): H1_scaffold_1 25.0-58.5 Mb reversed,
+58.5-109.78, H2_scaffold_46 0-8.65, H1_scaffold_1 109.78-119.55, H2_scaffold_46 8.65-23.07.
+Both gaps carry a `keep` site (sides belong together, contact across 0.51 and 0.48 of
+expectation). Phase 1 split a copy's own units at kept sites, but put extra pieces into the
+search whole: here both H1_scaffold_1 58.4-119.5 Mb (an extra of the copy) and
+H2_scaffold_46 (chained by contact), so neither gap could take anything.
+
+Change: extra pieces (`extra_of`, unlocs above `chain_px`) are split at their kept sites
+too; one that does not fit under the 9-piece limit split goes in whole, as before.
+
+- Troglobisium: phase 1 now searches five pieces and picks the curator's order
+  exactly (end contact 0.98/1.23/1.27/1.28, sum 4.75, against 2.66 as assembled; before:
+  three pieces, 2.09). The H1_scaffold_1 boundary is at 109.84 Mb, one pixel from the gap.
+  `tools/compare_layouts.py` against savestate_final: 24 of 32 tool junctions in the
+  curation (21 of 30 before), 30 of the curator's 53 reproduced (27 before); all three X
+  junctions reproduced, and the wrong one (X end to H2_scaffold_46) gone. Other decisions
+  unchanged.
+- Owl: savestate, AGP and decisions identical.
+- Test: the X's layout order in `TestTroglobisium.test_curation`.
