@@ -262,9 +262,12 @@ Validation, so the rules keep improving
     (a) Unloc tags of the tool and the curator almost never coincide on the two-haplotype
         genomes (0% on Troglobisium, 0-11% on the owl, with similar totals): the tool tags
         different pieces; look at which;
-    (b) HAP1 (the better copy) agrees with the owl curator's own curation on 53% of the bp
-        (91% with their corrections of the tool): the choice of copy differs on about half
-        the chromosomes;
+    (b) HAP1 agrees with the owl curator's own curation (savestate_6) on 53% of the bp: not
+        a disagreement. That curation kept each haplotype as assembled; the per-chromosome
+        choice of the better copy as HAP1 is the curator's rule implemented in the tool and
+        not yet applied in their own curations. Against the curator's corrections of the
+        tool (which follow the rule): 91%. HAP1 agreement is only meaningful against
+        references made with the rule;
     (c) Troglobisium at level 0: sex tags 41% (H2_scaffold_46 not chained at that level).
 13. **More genomes from the team, especially hard taxa** (not vertebrates, not
     butterflies): every corrected savestate (tool output + curator's edits) is a new

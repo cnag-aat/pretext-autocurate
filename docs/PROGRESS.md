@@ -1798,5 +1798,8 @@ biased towards it); Troglobisium savestate_final.
   recall 25 -> 34 of 53 and break recall 47% -> 68%, junction precision 76% -> 69%.
 - The owl needs few new junctions (7 in the curation); breaks and grouping are high.
 - Unloc tags of the tool and the curators hardly coincide on the two-haplotype genomes
-  (0-11%), with similar totals; HAP1 agrees with the owl curator's own curation on only 53%
-  (91% with their corrections). See HANDOFF 12 (a)-(c).
+  (0-11%), with similar totals. See HANDOFF 12 (a)-(c).
+- HAP1 against the owl's savestate_6 (53%) is expected, not an error: that curation kept
+  each haplotype as assembled, while the tool tags the better copy of each chromosome HAP1
+  (the curator's rule, not yet used in their own curations; curator, 2026-11-16). Against
+  their corrections of the tool, which follow the rule: 91%.
