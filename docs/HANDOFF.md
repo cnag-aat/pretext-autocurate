@@ -1,4 +1,4 @@
-# Handoff: state of pretext-autocurate (v1.1.0, updated 2026-11-14)
+# Handoff: state of pretext-autocurate (v1.2.0, updated 2026-11-16)
 
 Read this first, then `PLAN.md` section 0 (the curator's priorities and conventions; the
 rest of PLAN.md is the original plan and partly out of date), then the tail of
@@ -23,8 +23,10 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `busco.py` | BUSCO lineage (path or name, opt-in download), miniprot, gene counts per haplotype and scaffold |
 | `tracks.py` | evidence tracks: bedgraph/BED or map tracks -> per-pixel arrays (`to_pixels`, `from_map`, `load`); runs telo_scan.py (`run_telo_scan`) and Red (`run_red`, Intel build under Rosetta); BUSCO duplicate-pair / missing-gene tracks (`busco_tracks`); map copies with tracks via PretextGraph (`add_tracks`) |
 | `sexchrom.py` | sex chromosomes from the coverage track and the alignments (`analyse`): sex-linked stretches (half coverage, not aligned, or aligned into one: the other sex chromosome), PARs (normal-coverage end with chromosome-level contact, aligned or MQ0-linked to the other sex chromosome's end), another chromosome joined to a sex chromosome; `same_hap_candidates` for `homology.align_within`; `sex_chromosome` / `par` bedgraphs (`write_tracks`) |
+| `graph.py` | hifiasm graphs + YaHS AGPs: `Layout` (contigs in scaffolds), `Graph` (contig links, contig-end reads), `UnitigGraph` (unitig links, reads, read depth, sequence by file offset), `junctions` (links, bridges), `unitig_paths`, `choose_fill` (close / place / fill / leave, without duplicating the other haplotype), `insert_bridges` and `place_between` (on the PretextView-style AGP), `close_gaps` (on pretext-to-asm's output), `Faidx` |
+| `asm.py` | `build`: PretextView-style AGP -> graph edits -> pretext-to-asm -> gaps closed / filled; `run_pretext_to_asm` |
 | `vendor/telo_scan.py` | the curator's telomere scanner (cnag-aat/scripts 666994c), bundled unchanged apart from a provenance header |
-| `cli.py` | `info`, `dump`, `convert`, `haplotigs`, `run` (mode detection, `--level` / `--sweep`, review table, run info, track options) |
+| `cli.py` | `info`, `dump`, `convert`, `asm`, `haplotigs`, `run` (mode detection, `--level` / `--sweep`, review table, run info, track and graph options, `--pretext-to-asm`) |
 
 Order inside `curate_single`: misjoin cuts -> contig haplotigs (cut at gaps) -> weak
 junctions cut tentatively and kept only if pieces fit better elsewhere -> `SegmentedMap`
@@ -34,7 +36,7 @@ then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags
 ## How to run and check
 
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --map MAP.pretext --out-dir out
-    python3 -m unittest discover -s tests            # about 12 minutes; tests.test_allhaps alone about 6
+    python3 -m unittest discover -s tests            # 80 tests, about 25-45 minutes on the MacBook
     ... run --mode allhaps --map MQ0 --map MQ10 --paf H2_vs_H1.paf --small-paf small_vs_all.paf --busco-table H1=... --busco-table H2=...
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
     python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
@@ -218,9 +220,32 @@ Curation quality, two-haplotype mode
    rather than leave it unplaced and silent.
 
 Evidence
-9. **Unitig GFAs** (curator, hifiasm hap1/hap2): independent evidence for where a contig
-   is trustworthy. Needs a graph alignment (names differ from the assembly); minigraph or
-   GraphAligner are candidates.
+9. **hifiasm graphs + YaHS AGPs** (curator): explored 2026-11-16 (`tools/graph_junctions.py`,
+   see PROGRESS). No graph alignment is needed: the AGPs place each contig in its
+   scaffold, and the noseq GFAs' read lists place contigs on the unitig graph. An oriented
+   path of at most 2 Mb between the two contig ends of a YaHS gap: 107 of 197 gaps the
+   curator kept, 1 of 24 they broke (a haplotype switch at a bubble); it would have saved
+   the tool's one wrong cut with a path (H1_scaffold_16 at 0.45 Mb) and touched none of its
+   right ones. As a proposer of joins it is weaker: for contigs >= 1 Mb the nearest graph
+   neighbour is the curator's in 36 of 46 ends (7 of them joins YaHS missed), but paths
+   also exist for 8 of the tool's 29 wrong joins, and for small contigs most proposals are
+   pieces the curator left unplaced.
+   Done in 1.2.0 (`graph.py`, `--gfa`, `--yahs-agp`, `--utg-gfa`, `--fill-gaps`; PROGRESS
+   2026-11-16): contig links and bridges keep and close gaps; unitig paths stop
+   rearrangement at a gap; `asm` closes overlaps, places bridges and own-haplotype contigs
+   that lie wholly on a path, and fills only collapsed homozygous sequence (curator: never
+   duplicate the other haplotype's allele; collapsed sequence must be duplicated).
+   Still open:
+   (a) joins only the graph makes (a contig link or a unique path between two scaffold
+       ends that no layout joined) are not proposed; h2tg8-h2tg78 was closed only because
+       the tool had made the join. Candidates for review rows, or for joins in `run`;
+   (b) single mode does not read the graph;
+   (c) own-haplotype contigs that extend beyond the path (14 of 18 on Troglobisium) are
+       only named: placing them would mean cutting the contig where it leaves the path;
+   (d) H2_scaffold_17 0.45 Mb: with H1's join backed by the graph, the tool now inverts H2's
+       end piece on telomere + alignment evidence, which the curator kept; one case;
+   (e) only tested on Troglobisium (the only genome with GFAs); `run --utg-gfa` reads the
+       noseq file in about 10 s, `asm` the sequence file in 2-4 min.
 10. **FastGA on a cluster**: keep minimap2 as the default (curator), but accept a FastGA
     PAF via `--paf` once the tool has its own uniqueness filter (best chain per query
     stretch), since FastGA gives no mapping quality.
@@ -235,7 +260,19 @@ Validation, so the rules keep improving
 13. **More genomes from the team, especially hard taxa** (not vertebrates, not
     butterflies): every corrected savestate (tool output + curator's edits) is a new
     test. Ask curators to send `autocurate.run.txt` with it (README already says so).
-14. **AGP** checked against PretextView's own export (still unverified).
+14. **AGP**: since 2026-11-16 `layout.write_agp` mirrors PretextView's `GenerateAGP` line
+   for line (resolution header, pixel-derived coordinates, painted scaffolds first, "-" only
+   inside multi-piece painted scaffolds, paint-display tags dropped; before, `vertPaint`
+   reached the AGP, which pretext-to-asm would read as a haplotype). One deliberate
+   departure: scaffolds too short for a pixel are appended, unpainted, tagged HAP1/HAP2
+   by their H1_/H2_ prefix; otherwise pretext-to-asm puts them in extra "h1"/"h2"
+   assemblies (curator: a known nuisance with PretextView exports too). pretext-to-asm
+   1.4.1 runs end to end on the tool's Troglobisium and owl results (PROGRESS). Still to
+   do: compare with a real PretextView export of one savestate (base-pair rounding).
+   On the curator's Troglobisium savestate_final pretext-to-asm stops at a 1-pixel
+   unpainted piece inside a contig (H2_scaffold_6 25.83-25.90 Mb): "Expecting 2 abutting
+   sub fragments but got 1"; a PretextView export would contain the same piece. Either
+   remove the piece in PretextView or report it to sanger-tol/agp-tpf-utils.
 
 Engineering
 15. **Split `allhaps.py`** (about 1,700 lines; `curate_allhaps` alone about 600): telomere

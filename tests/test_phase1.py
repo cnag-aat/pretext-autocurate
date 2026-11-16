@@ -19,7 +19,7 @@ FX = os.path.join(ROOT, "seed", "fixtures")
 from pretext_autocurate import (Pretext, SaveState, MapState, Edit, Waypoint, plan_edits,
                                 header_hash, check_same_layout, BREAK_DELTA)
 from pretext_autocurate.pretextio import inflate
-from pretext_autocurate.layout import build_layout, write_agp
+from pretext_autocurate.layout import build_layout, invisible_scaffolds, write_agp
 from pretext_autocurate import cli
 
 BIRD0 = os.path.join(FX, "bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid_mq0.extensions.HR.pretext")
@@ -265,9 +265,24 @@ class TestLayout(unittest.TestCase):
             with open(agp) as f:
                 rows = [l.rstrip("\n").split("\t") for l in f if not l.startswith("#")]
             w = [r for r in rows if r[4] == "W"]
-            self.assertEqual(len(w), 400)
+            # the 400 pieces of the map, then the scaffolds too short for a pixel (absent from
+            # PretextView's export; appended so pretext-to-asm keeps them in their haplotype)
+            invisible = invisible_scaffolds(pretext(TYL))
+            self.assertEqual(len(w), 400 + len(invisible))
+            self.assertEqual([r[5] for r in w[400:]], [n for n, _ in invisible])
             for r in rows:
                 self.assertEqual(int(r[2]) - int(r[1]) + 1, int(r[5]) if r[4] == "U" else int(r[7]) - int(r[6]) + 1)
+            # as PretextView exports it (what pretext-to-asm reads): resolution header, painted
+            # scaffolds first, unpainted pieces always "+", paint-display tags left out
+            with open(agp) as f:
+                head = [l for l in f if l.startswith("#")]
+            self.assertEqual(head[0], "##agp-version\t2.1\n")
+            self.assertRegex(head[2], r"^# HiC MAP RESOLUTION: [\d.]+ bp/texel$")
+            painted = [r for r in w if len(r) > 9 and r[9] == "Painted"]
+            first_unpainted = next(i for i, r in enumerate(w) if not (len(r) > 9 and r[9] == "Painted"))
+            self.assertEqual(first_unpainted, len(painted))
+            self.assertTrue(all(r[8] == "+" for r in w[first_unpainted:]))
+            self.assertFalse([r for r in w if {"vertPaint", "horzPaint", "crossPaint"} & set(r[9:])])
             # same edits, bound to the MQ10 map of the same assembly
             out = os.path.join(d, os.path.basename(BIRD10) + ".savestate_x")
             cli.main(["convert", "--map", BIRD0, "--state", BIRD_SS, "--to", "state",

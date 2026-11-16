@@ -1,36 +1,72 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-11-16)
 
-- Contigs outrank scaffold joins: with sequence alignments, the copy of a chromosome that
-  leads the other's order and orientation is the one whose arrangement the other copy's
-  contigs contradict less (before: always the copy in fewer pieces). When the contigs of
-  each copy contradict the other, the pair is flagged `arrangement_differs`. The rows give
-  the contigs and the contradicted Mb. No change on the test genomes, where the contigs
-  agree with the old choice.
-- Sex chromosomes from coverage and alignment (`sexchrom.py`). Hemizygous stretches (half
-  coverage, no alignment to the other haplotype) mark the sex-specific part of a sex
-  chromosome; a half-coverage stretch aligned into one is the other sex chromosome's
-  homologous part. Divergent heterozygous stretches of autosomes, also at half coverage but
-  aligned to each other, are no longer mistaken for them. Normal-coverage sequence next to
-  a sex-linked stretch is called a PAR when it has chromosome-level contact with it and
-  aligns to (or, without alignments, shares MQ0 reads with) the other sex chromosome's
-  end; with no contact it is another chromosome joined there, and the cut row says so.
-  Two sex-linked scaffolds in one haplotype are aligned to each other with `--fasta`
-  (`homology.align_within`). Hemizygous scaffolds in no pair join the chain of the sex
-  chromosome they contact. New rows `sex_linked_region`, `par`, `par_candidate`,
-  `sex_boundary`, `sex_chromosome_join`; new tracks `sex_chromosome` and `par`
-  (`OUT_DIR/tracks/`, added to the map with `--add-tracks`); `--sex-system` (XY, ZW, X0,
-  Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2) tags the copies (without it they are not labelled: that
-  needs species knowledge). A `sex_summary` row reports what was found, and when nothing
-  was, that a homogametic sample or homomorphic sex chromosomes look like autosomes.
-- Extra pieces of a chromosome copy (scaffolds aligned or chained into it) are split at
-  their kept gaps before order and orientation are searched, so a piece can go into
-  another's gap. Troglobisium: the X is laid out as the curator did (H2_scaffold_46 split
-  at 8.6 Mb, its first part in H1_scaffold_1's gap at 109.8 Mb); 24 of 32 tool junctions
-  in the curation (21 of 30 before). No change on the owl.
-- Every module commented inline; `docs/HANDOFF.md` lists suggestions for further
-  development.
+Sex chromosomes, hifiasm's graphs, and the final assembly files.
+
+Sex chromosomes (`sexchrom.py`)
+- Hemizygous stretches (half coverage, no alignment to the other haplotype) mark the
+  sex-specific part of a sex chromosome; a half-coverage stretch aligned into one is the
+  other sex chromosome's homologous part. Divergent heterozygous stretches of autosomes,
+  also at half coverage but aligned to each other, are no longer mistaken for them.
+- Normal-coverage sequence next to a sex-linked stretch is a PAR when it has
+  chromosome-level contact with it and aligns to (or, without alignments, shares MQ0 reads
+  with) the other sex chromosome's end; with no contact it is another chromosome joined
+  there, and the cut row says so. Two sex-linked scaffolds in one haplotype are aligned to
+  each other with `--fasta` (`homology.align_within`). Hemizygous scaffolds in no pair join
+  the chain of the sex chromosome they contact.
+- `--sex-system` (XY, ZW, X0, Z0, X1X2Y, XY1Y2, Z1Z2W, ZW1W2) tags the copies; without it
+  they are not labelled (that needs species knowledge). A `sex_summary` row reports what was
+  found, and when nothing was, that a homogametic sample or homomorphic sex chromosomes look
+  like autosomes. New rows `sex_linked_region`, `par`, `par_candidate`, `sex_boundary`,
+  `sex_chromosome_join`; new tracks `sex_chromosome` and `par`.
+
+hifiasm's graphs (`graph.py`; `--gfa`, `--yahs-agp`, `--utg-gfa`, `--fill-gaps`)
+- The YaHS AGPs place every contig in its scaffold, and the GFAs' read lists place contigs
+  on the unitig graph; no graph alignment is needed, and GFAs with or without sequence work.
+- A gap whose two contig ends the contig graph links (`graph_link`), or that one small
+  contig bridges (`graph_bridge`), is never cut. A gap a unitig path crosses is not used to
+  rearrange (`graph_path`; a tip inversion or a contact-only cut there is dropped,
+  `graph_keep`; cuts backed by the alignment or a telomere stand), and neither is its
+  homologous kept site.
+- When the assembly files are built (`asm`): bridges and contigs of the gap's own haplotype
+  that lie wholly on a unitig path are put into the gap; gaps between linked contig ends,
+  or contigs that overlap or abut along a unitig path, are closed by trimming the overlap
+  (checked in the sequence); with `--fill-gaps`, a gap is filled only with collapsed
+  homozygous sequence (unitig read depth about twice the haploid, none of it in this
+  haplotype's other contigs, not next to a circular contig), never with the other
+  haplotype's own allele. `<name>.graph_edits.tsv` lists every gap and why;
+  `<name>.gapfills.fa` holds the fills.
+- Troglobisium: 2 bridges and 2 contigs placed (all pieces the curator had left
+  unplaced), 16 gaps closed, 15 filled (1.4 Mb; each fill of 1 kb or more is, by
+  alignment, only in the other haplotype); H1_scaffold_16's end piece no longer inverted.
+  Every edited chromosome checked against pretext-to-asm's own sequence.
+
+Assembly files (`asm.py`)
+- The AGP is written exactly as PretextView exports it after loading the savestate
+  (`# HiC MAP RESOLUTION` header, pixel-derived coordinates, painted scaffolds first, "-"
+  only inside painted scaffolds of several pieces), without the paint-display tags
+  (`vertPaint` used to reach it), and with the scaffolds too short for a pixel appended,
+  tagged HAP1/HAP2 by prefix (else pretext-to-asm makes separate h1/h2 assemblies).
+- New command `asm` and `run --pretext-to-asm`: the assembly files from a savestate with
+  pretext-to-asm (sanger-tol/agp-tpf-utils, installed separately); `--asm-name`,
+  `--asm-args`, `--pretext-to-asm-path`.
+
+Layout
+- Contigs outrank scaffold joins: the copy of a chromosome that leads the other's order and
+  orientation is the one whose arrangement the other copy's contigs contradict less; when
+  each contradicts the other, the pair is flagged `arrangement_differs`.
+- Extra pieces of a chromosome copy are split at their kept gaps before order and
+  orientation are searched, so one piece can go into another's gap. Troglobisium: the X is
+  laid out as the curator did; 24 of 32 tool junctions in the curation (21 of 30 before).
+
+Measured and not built (PROGRESS): a shared Hi-C backbone of both copies
+(`tools/backbone_gaps.py`: the copies give nearly the same contact, no gain) and merges
+checked by alignment (no sequence spans a merge join).
+
+Other
+- Every module commented inline; `docs/HANDOFF.md` lists what is left.
+- `tools/graph_junctions.py`: graph evidence at the junctions of any layout.
 
 ## 1.1.0 (2026-11-14)
 

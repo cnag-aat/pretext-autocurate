@@ -8,5 +8,6 @@
   of `docs/PROGRESS.md`.
 - Tests: `python3 -m unittest discover -s tests` (needs the data in `seed/fixtures/`, not in
   the repository; about 12 minutes).
-- External tools live in conda envs `pretext-autocurate` (minimap2, miniprot, FastGA) and
+- External tools live in conda envs `pretext-autocurate` (minimap2, miniprot, FastGA, and
+  pretext-to-asm from sanger-tol/agp-tpf-utils, pip-installed with the env's Python) and
   `pretext-autocurate-x86` (Red, PretextGraph; Intel builds, run under Rosetta).

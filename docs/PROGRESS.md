@@ -1530,3 +1530,238 @@ every case: no sequence spans a merge join, so the alignment cannot confirm one.
 - Decision: not built. Possible guard, six cases only: joined ends that coincide in both
   haplotypes (within ~0.5 Mb) are likely chromosome ends; would need checking on more
   merges before use.
+
+## 2026-11-16: hifiasm graphs and YaHS AGPs as evidence (exploratory)
+
+Data (curator): `seed/fixtures/qqTroRaco_hifiasm_gfas_yahs_agps/`: hifiasm noseq GFAs
+(hap1/hap2 p_ctg, p_ctg, p_utg, r_utg) and the YaHS AGPs of each haplotype. Script:
+`tools/graph_junctions.py` (13 s).
+
+How contigs reach the graph without sequence
+- YaHS used all 546 hap1 and 440 hap2 contigs unbroken; the AGPs (scaffold_N =
+  H1_/H2_scaffold_N; all 765 lengths agree with the map) put every contig in its scaffold,
+  so every scaffold gap is a junction between two contig ends.
+- The GFAs' `A` lines list the reads in each contig and each unitig; the outermost reads of a
+  contig give the unitig, and its orientation, where the contig starts and ends.
+- A junction (contig A's exit, contig B's entry, as laid out) is checked for: a direct link
+  in hifiasm's haplotype contig graph (rare: 4 of 197), both ends in one connected
+  component of the unitig graph (components are chromosome-sized, 400-5,000 unitigs), and
+  the shortest oriented path between them (bp of unitigs walked, up to 2 Mb).
+- p_utg and r_utg give the same results.
+
+Junctions YaHS made, by the curator's verdict (savestate_final)
+| | n | same component | oriented path <= 2 Mb | <= 200 kb | A's end a dead end |
+|---|---|---|---|---|---|
+| kept by the curator | 197 | 164 | 107 | 81 | 49 |
+| broken by the curator | 24 | 17 | 1 | 0 | 15 |
+- A path is near-certain support for keeping a gap (107 to 1). The exception, H2_scaffold_6
+  at 46.67 Mb, is a haplotype switch: the curator moved h2tg000106l to H1_scaffold_78's
+  contig, which has a path of the same length to it (a bubble).
+- No path says little: 90 kept gaps have none, mostly at dead ends of the graph.
+- Same component says little: 17 of the 24 broken gaps are within one component.
+- The tool (out of `out_tro_split`): of the YaHS gaps it broke, 5 the curator kept, 1 of them
+  with a path (H1_scaffold_16 0.45 Mb, an end piece the tool inverted); 15 the curator
+  broke, none with a path. A path as a veto on cuts would fix that one and cost nothing.
+
+Junctions the curator made that YaHS did not: 102, 23 with a path (H1_scaffold_10's
+interleaving, H1_scaffold_72 into H1_scaffold_2, the small scaffolds between H2_scaffold_59
+and H2_scaffold_77, H2_scaffold_70 + H2_scaffold_67 with a direct contig link, ...).
+
+The graph as a proposer: from each contig end, the nearest same-haplotype contig end
+reachable in the graph
+- Contigs of 1 Mb or more at both ends: 46 proposals; 27 are YaHS junctions the curator
+  kept, 7 junctions only the curator made, 2 YaHS junctions the curator broke, 10 neither
+  (several within one scaffold: the graph would orient a contig differently; not checked).
+- With small contigs: 614 of 790 proposals are in neither layout, nearly all contigs under
+  0.3 Mb (below 5 px) that the curator left as standalone scaffolds.
+- The tool's own joins: a path for 6 of its 18 right ones and 8 of its 29 wrong ones (some
+  of the wrong ones put a small scaffold between two pieces where the graph allows it and
+  the curator did not).
+
+Conclusion
+- Worth adding as supporting evidence for keeping gaps (and against cutting them), in the
+  same role as telomeres: inputs `--gfa` (noseq is enough) and `--yahs-agp`.
+- As a source of joins: review hints only. Sequence GFAs are not needed for any of this;
+  they would only matter to align unitigs that hifiasm left out of both haplotypes.
+
+## 2026-11-16: AGP as PretextView exports it; pretext-to-asm
+
+The curator's post-processing is pretext-to-asm (sanger-tol/agp-tpf-utils): input FASTA +
+PretextView's AGP export -> curated assembly files. It is wrapped, not reimplemented
+(`asm.py`; `pretext-autocurate asm`, `run --pretext-to-asm`): its naming rules are
+maintained there and it streams the sequence through a .fai index.
+
+What pretext-to-asm needs, from its source and PretextView's GenerateAGP (commit in
+docs/pretextview_commit.txt)
+- `# HiC MAP RESOLUTION: <bp> bp/texel` in the header (it snaps breaks to the assembly's
+  gaps within that tolerance; without it, it exits). Our AGP lacked it.
+- Tags in columns 10+, every unknown tag read as a haplotype name. Our AGP carried
+  `vertPaint` (PretextView leaves its paint-display tags out), which would have made a
+  "vertPaints" assembly.
+- `layout.write_agp` now mirrors GenerateAGP: pixel-derived coordinates, painted
+  scaffolds first (Scaffold_<paint id>), "-" only inside painted scaffolds of several
+  pieces, 100 bp U gaps.
+- Scaffolds under one pixel are in no PretextView export, and pretext-to-asm groups such
+  sequences by name prefix (h1, h2: 91 and 43 scaffolds, 4.4 Mb, on Troglobisium). They are
+  now appended to our AGP tagged HAP1/HAP2 by prefix.
+
+Results (pretext-to-asm 1.4.1, installed in the pretext-autocurate env with Python 3.12)
+- Troglobisium, the tool's result (out_tro_split): hap1 2.284 Gb (68 autosomes, X 117.6 Mb,
+  Y 33.4 Mb, 362 unplaced), hap2 2.076 Gb (68 autosomes, 240 unplaced), 5 false
+  duplicates 2.8 Mb; with the 44,200 bp of gaps, exactly the input's 4.363 Gb; 97.0% in
+  chromosomes; 41 s.
+- Owl, the tool's result: hap1 with Z 96.0 Mb and W 38.4 Mb, 40 autosomes per haplotype,
+  93.6% in chromosomes.
+- Troglobisium, the curator's savestate_final: pretext-to-asm stops ("Expecting 2 abutting
+  sub fragments but got 1") at a 1-pixel unpainted piece inside a contig (H2_scaffold_6
+  25.83-25.90 Mb). A PretextView export would hold the same piece, so this is not ours to
+  fix; to confirm with a real export.
+
+## 2026-11-16: hifiasm contig graph in run and asm (`graph.py`)
+
+Curator's design: sequence the graph shows adjacent needs no gap, and a small piece that is
+the only way across a gap fills it. hifiasm's GFAs here have S, L and A lines only (no W, P
+or J); links between contigs carry the read overlap (7-21 kb, median 16 kb), so closing a
+gap means dropping the overlap from one side, not just the N's.
+
+- Inputs: `--gfa` (hifiasm `*.hapN.p_ctg.gfa`, with or without sequence) and `--yahs-agp`
+  (each haplotype; scaffold_N -> HN_scaffold_N). The AGPs say where each contig sits; the
+  assembly FASTA (`--fasta`, or `asm`'s) gives the bases.
+- At a YaHS gap: `link` if the graph links the two contig ends; `bridge` if the only link out
+  of the left contig and the only link into the right one go to the same contig and that
+  contig is a scaffold of its own. Overlaps are checked as an exact suffix-prefix match (the
+  graph's length first, then within +-2 kb).
+- `run`: such a gap is never cut, tip-inverted or used as a split point; rows `graph_link`
+  and `graph_bridge` (the latter in the review list).
+- `asm`: bridges go into their gaps in the PretextView-style AGP before pretext-to-asm (the
+  host line is split at the gap; the bridge gets the host's tags); after it, every gap in
+  its output AGPs whose two sides are graph-linked contig ends is closed (the right-hand
+  component loses the overlap), the edited records are rebuilt from the input assembly and
+  the rest copied; `<name>.graph_edits.tsv` lists every edit.
+
+Troglobisium (noseq GFAs; tool's result at level 0.5)
+- 4 links (H1_scaffold_18, _38, _44, H2_scaffold_23; overlaps 13.3-17.8 kb) and 2 bridges
+  (h1tg274, H1_scaffold_229, 71 kb, into H1_scaffold_54; h1tg492, H1_scaffold_373, 29 kb and
+  under one pixel, into H1_scaffold_3). Every overlap is exact at the graph's length.
+- None of the tool's cuts fell on these gaps, so the decisions are otherwise unchanged.
+- `asm`: 2 bridges inserted, 9 gaps closed: the 4 links, both sides of each bridge, and
+  h2tg8-h2tg78, a join the tool made (and the curator too) that the graph confirms.
+- Check (scratchpad `checkfa.py`, independent of the code): untouched records byte-identical
+  to pretext-to-asm's without the graph; each of the 7 edited chromosomes equal to the old
+  record with its gaps and overlaps removed, bridges equal to the input FASTA.
+- Tests: `tests/test_graph.py` (synthetic, both orientations; Troglobisium junctions).
+
+## 2026-11-16: hifiasm unitig graph: keep evidence and gap filling (`--utg-gfa`, `--fill-gaps`)
+
+Data: `qqTroRaco.hfsm.asm.bp.p_utg.gfa` / `r_utg.gfa` with sequence (5.6 GB each; curator).
+(The first files copied, `hap1.gfa` / `hap2.gfa`, were the haplotype contig graphs with
+sequence, identical to `hapN.p_ctg.gfa`; they add nothing to the FASTA. The graph code reads
+them all the same.)
+
+Contig ends on the unitig graph: the outermost reads of each haplotype contig (p_ctg `A`
+lines) and the unitig of every read (p_utg `A` lines). Unitig lengths in the sequence file
+agree with the noseq file (417 of 417 checked).
+
+Across the 221 YaHS gaps (p_utg; scratchpad `utgfill.py`)
+- 106 have a unitig path between the two contig ends within 1 Mb: 77 a single path, 29
+  with alternatives (bubbles, up to 20 paths). The 4 contig-graph links and 2 bridges are
+  among them; 100 are new.
+- In 105 of 106 the last 1 kb of the left contig and the first 1 kb of the right one each
+  occur once in the shortest path's sequence: 97 have sequence between them (209 bp to
+  391 kb), 8 overlap (the 4 links, the 2 bridges' sides as one, and 2 more: H1_scaffold_43
+  8.95 Mb, 131 bp; H1_scaffold_50 22.68 Mb, 8.8 kb).
+- Where the fill comes from: in 93 of 97 the reads of the inner unitigs are in other
+  contigs, mostly the other haplotype's (e.g. H1_scaffold_1's gaps: reads in hap2 contigs);
+  in 4 mostly in no contig. hifiasm's HG tags are all 'a' in this run, so no phase labels.
+
+Decisions (`run --utg-gfa`, `_unitig_evidence`)
+- Weaker than a contig link (107 of the curator's 197 kept YaHS gaps have a path, 1 of the 24
+  broken: H2_scaffold_6 46.67 Mb, a haplotype switch where the alignment breaks). So a path
+  only stops the gap from being a split point; a tip inversion or a contact-only cut there
+  becomes a keep; a cut backed by the alignment or a telomere stands (it does at
+  H2_scaffold_6 46.67). The homologous kept site in the other haplotype is held too.
+- Troglobisium: H1_scaffold_16's 0.5 Mb end piece is no longer inverted (the curator kept
+  it), nor H2_scaffold_17 rearranged to match; five kept sites leave the review list
+  (backed by a path). But H2_scaffold_17's own site is an invert_tip on telomere strand +
+  alignment, which now applies (the curator kept it as assembled): the count of YaHS joins
+  the tool breaks and the curator kept stays 5. Junction score unchanged (24 of 32, 30 of
+  the curator's 53).
+
+Assembly (`asm --utg-gfa --fill-gaps`, tool's result)
+- 2 bridges, 9 gaps closed by contig links, 2 more closed by an overlap along a unitig path,
+  68 filled (3.2 Mb, `qqTroRaco.gapfills.fa`), 41 kept with the reason (bubbles, or no
+  single path in the final layout's junctions). 4 min, 1.1 GB RAM.
+- Check (scratchpad `checkfa2.py`): untouched records byte-identical; each of the 30
+  edited chromosomes equal to pretext-to-asm's own records plus the fills, minus the closed
+  gaps and overlaps.
+- Fills are an option, not the default: most bring sequence hifiasm put in the other
+  haplotype, which is right for a homozygous stretch and brings the other allele for a
+  heterozygous one.
+
+## 2026-11-16: gap fills without duplicating the other haplotype (read depth)
+
+Curator: do not copy sequence that is in the other haplotype; if the only path is collapsed
+homozygous sequence, duplicating it is right; a shorter alternative path or a direct join
+should be looked for first; coverage should tell the cases apart.
+
+- hifiasm's unitig read depth (rd:i:) is cleanly bimodal on Troglobisium (unitigs >= 50 kb,
+  by length): haploid peak ~26 (2.6 Gb), diploid peak ~56 (0.5 Gb, collapsed homozygous).
+  `UnitigGraph.haploid` takes the lower peak (25).
+- Every path across each YaHS gap (up to 20, within 150 kb of the shortest; scratchpad
+  `utgdepth.py`): 7 gaps have a direct join; of the rest, 21 have a collapsed path, 53 only
+  haploid paths whose reads are in the other haplotype's contigs, 20 haploid paths in this
+  haplotype's contigs or in none, 5 mixed.
+- The map's Hi-C coverage track is no help here: about 0.9 at the other haplotype's copy of
+  collapsed fills, where 2 would be expected for the assembly's only copy.
+- Ground truth by alignment: the 72 candidate fills of >= 1 kb as the minimap2 reference,
+  the whole assembly as query (asm5, identity >= 0.95; scratchpad `fillcopies.py`). 12 of
+  the 15 collapsed fills are only in the other haplotype; the 3 others are also in their own
+  haplotype (H1_scaffold_9 24.03 Mb and H2_scaffold_2 21.67 Mb, the same 124 kb; H1_scaffold_46
+  17.73 Mb), all next to a circular contig (hifiasm 'c': a tandem repeat unit).
+
+Rule (`graph.choose_fill`), per gap, over all paths:
+1. the contigs overlap or abut along a path: close;
+2. next to a circular contig: not filled (number of repeat units unknown);
+3. a path whose inner unitigs have reads in this haplotype's other contigs (the two flanking
+   contigs excluded, their reads reach into the next unitigs): this haplotype already has
+   the sequence; the contig is named for placement, nothing copied;
+4. the shortest path at collapsed depth (1.6-2.6x haploid) with at most 10% of its reads in
+   this haplotype's contigs: fill;
+5. otherwise not filled (haploid: one haplotype's allele; repeat; ends not found).
+
+Result (asm on the tool's Troglobisium result): 2 bridges, 11 gaps closed, 15 filled
+(1.4 Mb; was 68 and 3.2 Mb), 94 kept and listed, 18 of them with a contig of the same
+haplotype named for placement. Each of the 13 fills of >= 1 kb matches an aligned candidate
+present only in the other haplotype (own haplotype <= 4%, short repeats). `checkfa2.py`:
+edited chromosomes equal to pretext-to-asm's records plus fills, minus gaps and overlaps;
+the rest byte-identical.
+
+## 2026-11-16: contigs of the gap's own haplotype placed along a unitig path
+
+The 18 contigs named "place that contig here": a contig is put into the gap (like a
+bridge, before pretext-to-asm; its two new junctions are then closed or filled like any
+other) when it lies wholly on the path (its first and last unitig both on it, in order:
+`graph._along`), is a scaffold of its own, is named for this gap only, and the gap is not a
+repeat tangle (fewer than 20 paths). Junctions between two pieces of the layout (joins the
+tool or the curator made) are included (`graph.place_between`, piece ends snapped to contig
+ends within 1.5 px).
+
+- Most named contigs extend beyond the path (e.g. h2tg416, 42 kb: its first unitig is on
+  the path into the gap, its last is not): placing them whole would add sequence that is
+  not in the gap. Left as suggestions.
+- Placed on Troglobisium (tool's result): H2_scaffold_139 (152 kb) into H2_scaffold_40's
+  gap at 18.65 Mb; H2_scaffold_276 (38 kb, under one pixel) between h2tg95 and h2tg129 (a
+  join the tool made in H2_scaffold_6), both junctions then closed by overlaps checked in the
+  sequence (15.7 and 13.3 kb). The curator had left both unplaced (2-3 px).
+- A first version also put H1_scaffold_171 into H1_scaffold_25 at 12.65 Mb: a repeat tangle
+  (20 paths, Hi-C coverage ~4); its junctions then made no sense. Hence the tangle guard.
+- Overlaps longer than the 1 kb anchor (the right contig starts before the left one ends
+  along the path) are now measured and checked in the sequence: 4 more gaps closed.
+- Totals: 2 bridges, 2 contigs placed, 16 gaps closed, 15 filled (1.4 Mb), 91 kept and
+  listed; `checkfa2.py` all OK.
+
+## 2026-11-16: v1.2.0
+
+Released: sex chromosomes, hifiasm's graphs (`--gfa`, `--yahs-agp`, `--utg-gfa`,
+`--fill-gaps`), PretextView-exact AGP, `asm` / `run --pretext-to-asm`. 80 tests. What is left
+is in `docs/HANDOFF.md` (suggestions 5-18, the open points of 9, known gaps).

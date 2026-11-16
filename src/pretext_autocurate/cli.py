@@ -1,12 +1,13 @@
-"""Command line: run (the pre-curation pass), info, dump, convert, haplotigs."""
+"""Command line: run (the pre-curation pass), info, dump, convert, asm, haplotigs."""
 import argparse
 import collections
+import os
 import sys
 
-from . import __version__
+from . import __version__, asm
 from .pretextio import Pretext, check_same_layout
 from .savestate import SaveState
-from .layout import build_layout, invisible_scaffolds, write_agp, write_tsv
+from .layout import build_layout, invisible_scaffolds, unplaced_hap_tags, write_agp, write_tsv
 
 
 def cmd_info(a):
@@ -70,8 +71,10 @@ def cmd_convert(a):
             sys.exit(f"error: {e}")
         st.save(a.out, other.path)
     else:
-        pieces = build_layout(pt, st)
-        (write_agp if a.to == "agp" else write_tsv)(pieces, a.out)
+        if a.to == "agp":
+            write_agp(pt, st, a.out, unplaced=unplaced_hap_tags(pt, st))
+        else:
+            write_tsv(build_layout(pt, st), a.out)
     print(f"wrote {a.out}", file=sys.stderr)
 
 
@@ -104,6 +107,8 @@ def cmd_haplotigs(a):
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
+                  "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
+                  "graph_keep": "unitig path across the gap: rearrangement there dropped",
                   "sex_boundary": "sex chromosome meets another chromosome, not cut",
                   "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
                   "sex_chromosome_candidate": "hemizygous chromosome", "pair_unequal": "possible sex chromosome pair",
@@ -255,8 +260,14 @@ def cmd_run(a):
     """`run`: the pre-curation pass. Analyses the first (MQ0) map in single or allhaps mode;
     writes per output directory (one per level with --sweep) decisions.tsv, review.tsv, an AGP,
     run.txt, and a savestate for every map given (and every --add-tracks copy)."""
-    import os
     from .curate import curate_single, write_decisions
+    if bool(a.gfa) != bool(a.yahs_agp):
+        sys.exit("error: --gfa and --yahs-agp go together (the AGPs say where the graph's contigs are)")
+    if a.pretext_to_asm:
+        if not a.fasta:
+            sys.exit("error: --pretext-to-asm needs --fasta (the assembly the maps were made from)")
+        if asm.find_tool("pretext-to-asm", a.pretext_to_asm_path) is None:     # fail before the long run
+            sys.exit(f"error: pretext-to-asm not found; install it with: {asm.INSTALL}")
     for m in a.map:
         if not os.path.exists(m):
             sys.exit(f"error: {m} not found")
@@ -359,20 +370,38 @@ def cmd_run(a):
             res = sexchrom.analyse(pt, blocks, same, level=a.level)
             a.sex_track_files = sexchrom.write_tracks(pt, res, os.path.join(a.out_dir, "tracks")) if res["stretches"] else {}
         tracked = _with_tracks(a, hits)             # once: the tracks do not depend on the level
+        gj, ups = None, None
+        if a.gfa:
+            from . import graph
+            try:
+                gj, lay, gr = graph.load(a.gfa, a.yahs_agp, a.fasta, names=pt.names)
+            except ValueError as e:
+                sys.exit(f"error: {e}")
+            nl = sum(j.kind == "link" for j, _ in gj)
+            print(f"hifiasm graph: {nl} gap(s) between linked contig ends, {len(gj) - nl} filled by a bridging contig",
+                  file=sys.stderr)
+            if a.utg_gfa:
+                print(f"reading the unitig graph {a.utg_gfa} ...", file=sys.stderr)
+                done = {(j.scaffold, j.gap_start) for j, _ in gj}
+                ups = [u for u in graph.unitig_paths(lay, gr, graph.UnitigGraph(a.utg_gfa))
+                       if (u.scaffold, u.gap_start) not in done]
+                print(f"hifiasm unitig graph: {len(ups)} more gap(s) crossed by a unitig path", file=sys.stderr)
         levels =[float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
             try:
                 rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
                                                 busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex,
-                                                same_hap_blocks=same, sex_system=a.sex_system)
+                                                same_hap_blocks=same, sex_system=a.sex_system, graph_junctions=gj,
+                                                unitig_paths=ups)
             except ValueError as e:
                 sys.exit(f"error: {e}")
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
             os.makedirs(out_dir, exist_ok=True)
             prefix = os.path.join(out_dir, a.prefix)
             write_rows(rows, prefix + ".decisions.tsv")
-            write_agp(build_layout(pt, st), prefix + ".agp")
+            write_agp(pt, st, prefix + ".agp", unplaced=unplaced_hap_tags(pt, st))
+            _maybe_asm(a, prefix + ".agp", out_dir, pt.names)
             # One savestate per map, each with that map's hash (it covers the file name).
             for path in [m.path for m in maps] + tracked:
                 name = os.path.basename(path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
@@ -396,8 +425,8 @@ def cmd_run(a):
     os.makedirs(a.out_dir, exist_ok=True)
     prefix = os.path.join(a.out_dir, a.prefix)
     write_decisions(decisions, prefix + ".decisions.tsv")
-    pieces = build_layout(pt, st)
-    write_agp(pieces, prefix + ".agp")
+    write_agp(pt, st, prefix + ".agp", unplaced=unplaced_hap_tags(pt, st))
+    _maybe_asm(a, prefix + ".agp", a.out_dir, pt.names)
     tracked = _with_tracks(a, None)
     for path in [m.path for m in maps] + tracked:
         st.save(os.path.join(a.out_dir, os.path.basename(path) + ".savestate_autocurate"), path)
@@ -408,6 +437,65 @@ def cmd_run(a):
     print(f"edits {len(st.edits)}, painted contigs {len(st.scaffs)}, tags {len(st.meta_flags)}, "
           f"waypoints {len(st.waypoints)}; {nrev} items to review in {prefix}.review.tsv; outputs in {a.out_dir}",
           file=sys.stderr)
+
+
+def _asm_args(p):
+    """Options shared by `asm` and `run --pretext-to-asm`."""
+    p.add_argument("--asm-name", help="name of the assembly files (default: the FASTA name up to its first dot)")
+    p.add_argument("--asm-args", default="", help="further pretext-to-asm options, quoted as one string, e.g. "
+                                                  "'--autosome-prefix SUPER_ --min-contig-length 1000'")
+    p.add_argument("--pretext-to-asm-path", help="path to pretext-to-asm (default: PATH, then conda env pretext-autocurate)")
+
+
+def _graph_args(p):
+    """hifiasm graph and YaHS AGPs (`run` and `asm`)."""
+    p.add_argument("--gfa", action="append", default=[],
+                   help="hifiasm contig graph of one haplotype (*.hap1.p_ctg.gfa, with or without sequence); repeat "
+                        "for each haplotype. With --yahs-agp: gaps between contig ends the graph links are kept "
+                        "(and closed by asm), and small contigs that fill a gap unambiguously are put there by asm")
+    p.add_argument("--yahs-agp", action="append", default=[],
+                   help="YaHS AGP of one haplotype (how its scaffolds were built from the GFA's contigs), as "
+                        "H1=path or a path whose name contains hap1/hap2; repeat for each haplotype")
+    p.add_argument("--utg-gfa", help="hifiasm unitig graph (*.p_utg.gfa; uncompressed, with sequence for --fill-gaps), "
+                                     "with --gfa and --yahs-agp: a gap whose contig ends a unitig path connects is not "
+                                     "rearranged (run), and contigs that overlap along a single path are joined (asm)")
+    p.add_argument("--fill-gaps", action="store_true",
+                   help="asm: fill a gap that a single unitig path crosses with the path's sequence between the two "
+                        "contigs (often sequence the other haplotype also has; each fill is listed)")
+
+
+def _maybe_asm(a, agp, out_dir, names):
+    """`run --pretext-to-asm`: the assembly from this run's AGP, in OUT_DIR/assembly."""
+    if not a.pretext_to_asm:
+        return
+    try:
+        asm.build(a.fasta, agp, os.path.join(out_dir, "assembly"), a.asm_name, exe=a.pretext_to_asm_path,
+                  extra=a.asm_args, gfa=a.gfa, yahs_agp=a.yahs_agp, names=names, utg_gfa=a.utg_gfa,
+                  fill_gaps=a.fill_gaps)
+    except RuntimeError as e:
+        sys.exit(f"error: {e}")
+
+
+def cmd_asm(a):
+    """`asm`: a savestate on its map -> the AGP PretextView would export -> pretext-to-asm."""
+    pt = Pretext(a.map, load_graphs=False)
+    st = SaveState.load(a.state)
+    if st.header_hash != pt.hash:
+        sys.exit(f"error: {a.state} was not saved from {a.map} (hash mismatch)")
+    os.makedirs(a.out_dir, exist_ok=True)
+    name = a.asm_name or asm.default_name(a.fasta)
+    agp = os.path.join(a.out_dir, name + ".pretext.agp")
+    write_agp(pt, st, agp, unplaced=unplaced_hap_tags(pt, st))
+    if bool(a.gfa) != bool(a.yahs_agp) or ((a.utg_gfa or a.fill_gaps) and not a.gfa):
+        sys.exit("error: --gfa and --yahs-agp go together (the AGPs say where the graph's contigs are), and "
+                 "--utg-gfa / --fill-gaps need both")
+    if a.fill_gaps and not a.utg_gfa:
+        sys.exit("error: --fill-gaps needs --utg-gfa (the unitig graph with sequence)")
+    try:
+        asm.build(a.fasta, agp, a.out_dir, name, exe=a.pretext_to_asm_path, extra=a.asm_args,
+                  gfa=a.gfa, yahs_agp=a.yahs_agp, names=pt.names, utg_gfa=a.utg_gfa, fill_gaps=a.fill_gaps)
+    except RuntimeError as e:
+        sys.exit(f"error: {e}")
 
 
 def main(argv=None):
@@ -493,7 +581,21 @@ def main(argv=None):
                         "coverage are then tagged: XY/ZW the larger X (Z); X0/Z0 all X (Z); X1X2Y etc. the copy homologous "
                         "to both others Y (W), the others X1, X2 by size. Without it they are tagged HAP1 only")
     p.add_argument("--apply-inserts", action="store_true", help="insert localised pieces instead of only proposing them")
+    _asm_args(p)
+    _graph_args(p)
+    p.add_argument("--pretext-to-asm", action="store_true",
+                   help="also build the assembly from this pre-curation (needs --fasta and pretext-to-asm): "
+                        "OUT_DIR/assembly/NAME.1.* (with --sweep, one per level directory)")
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("asm", help="savestate -> PretextView-style AGP -> assembly FASTA/AGP files with pretext-to-asm "
+                                   "(sanger-tol/agp-tpf-utils)")
+    p.add_argument("--map", required=True)
+    p.add_argument("--state", required=True, help="the savestate, e.g. the curator's after review")
+    p.add_argument("--fasta", required=True, help="the assembly the map was made from (plain or .gz)")
+    p.add_argument("--out-dir", default=".")
+    _asm_args(p)
+    _graph_args(p)
+    p.set_defaults(fn=cmd_asm)
     a = ap.parse_args(argv)
     a.fn(a)
 

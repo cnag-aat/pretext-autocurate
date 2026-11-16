@@ -6,7 +6,7 @@ opens, reviews and finishes, together with a table explaining every decision and
 list of the things that need a curator's eye. It does not replace the curator: marginal
 calls are flagged, never hidden.
 
-**Version 1.1.** Developed and tested on three genomes: a gastropod (single haplotype),
+**Version 1.2.** Developed and tested on three genomes: a gastropod (single haplotype),
 the boreal owl *Aegolius funereus* (two haplotypes, MQ0 + MQ10) and the pseudoscorpion
 *Troglobisium racovitzai* (two haplotypes, heavily rearranged, MQ0 only). Thresholds are
 relative to each map's own signal. Always review the output before accepting it.
@@ -20,7 +20,9 @@ relative to each map's own signal. Always review the output before accepting it.
 
 Or, with Python >= 3.10 and numpy available: `pip install -e .`. minimap2 (and miniprot for
 `--busco-lineage`) are only needed when the tool aligns sequence itself; they are looked
-for on `PATH`, then in a conda environment named `pretext-autocurate`.
+for on `PATH`, then in a conda environment named `pretext-autocurate`. To build the final
+assembly files (`asm`, `run --pretext-to-asm`), also install pretext-to-asm:
+`pip install git+https://github.com/sanger-tol/agp-tpf-utils`.
 
 ## Quick start
 
@@ -30,6 +32,22 @@ and the assembly they were made from.
     pretext-autocurate run \
         --map asm.diploid_mq0.pretext --map asm.diploid_mq10.pretext \
         --fasta asm.diploid.fa.gz --threads 16 --out-dir precur
+
+With hifiasm's graphs and the YaHS AGPs as well (recommended when you have them; see
+"Optional evidence"), and the assembly files built at the end:
+
+    pretext-autocurate run \
+        --map asm.diploid_mq0.pretext --map asm.diploid_mq10.pretext \
+        --fasta asm.diploid.fa --threads 16 \
+        --gfa asm.hap1.p_ctg.gfa --gfa asm.hap2.p_ctg.gfa \
+        --yahs-agp asm.hap1.yahs.agp --yahs-agp asm.hap2.yahs.agp \
+        --utg-gfa asm.p_utg.gfa --fill-gaps --pretext-to-asm --out-dir precur
+
+After your review in PretextView, the same files from your savestate:
+
+    pretext-autocurate asm --map asm.diploid_mq0.pretext --state my.savestate \
+        --fasta asm.diploid.fa --gfa ... --yahs-agp ... --utg-gfa asm.p_utg.gfa --fill-gaps \
+        --out-dir final
 
 Single haplotype (or a collapsed assembly):
 
@@ -51,9 +69,11 @@ through `precur/autocurate.review.tsv`.
 | `<map name>.savestate_autocurate` | load in PretextView after loading that map (one per `--map`) |
 | `autocurate.review.tsv` | what to look at, most important first, with the reason |
 | `autocurate.decisions.tsv` | every action with its evidence (cut, join, pairing, unloc, flag ...) |
-| `autocurate.agp` | the proposed assembly (format not yet checked against PretextView's own export) |
+| `autocurate.agp` | the proposed assembly, written as PretextView would export it after loading the savestate (input for pretext-to-asm) |
 | `autocurate.run.txt` | version, command line and every option, for reproducibility |
 | `work/` | cached alignments (reused on the next run) |
+| `tracks/` | bedgraphs of the evidence tracks (sex chromosomes, PARs, telomeres by strand, ...) |
+| `assembly/` | with `--pretext-to-asm`: pretext-to-asm's files (FASTA and AGP per haplotype, chromosome lists, ...), plus `<name>.graph_edits.tsv` (every gap closed, filled or left, and contigs placed, with the reason) and `<name>.gapfills.fa` (gap fills) when the hifiasm graphs are given; `asm` writes the same into its `--out-dir` |
 
 In the savestate:
 
@@ -110,6 +130,14 @@ Two haplotypes (`allhaps`):
   Only what is hemizygous in the sequenced individual shows: a sample of the homogametic
   sex (XX, ZZ) or homomorphic sex chromosomes look like autosomes and are paired as such;
   the `sex_summary` row says when nothing was found.
+- **hifiasm's graphs** (`--gfa`, `--yahs-agp`, `--utg-gfa`): a gap whose two contig ends
+  the contig graph links, or that one small contig bridges, is a right join and is never
+  cut; a gap a unitig path crosses is not used to rearrange. When the assembly files are
+  built (`asm`), linked contigs are joined by trimming their overlap, bridging contigs and
+  contigs of the gap's own haplotype that lie on a unitig path are put into the gap, and,
+  with `--fill-gaps`, collapsed homozygous sequence fills the gap (never sequence the
+  other haplotype already holds as its own allele). PretextView cannot express these
+  changes, so they are made on the assembly files, each listed with its evidence.
 - Flags (does not change): sites where both sides belong together, places where the two
   haplotypes disagree, unloc candidates with one line of evidence, scaffolds with no homolog.
 
@@ -134,6 +162,9 @@ haplotigs (off-diagonal line plus reduced coverage; borderline ones highlighted)
 | `--telomere-motif MOTIF` | runs the bundled telo_scan.py (CNAG) on `--fasta` for telomeres by strand (e.g. TTAGGG vertebrates, TTAGG most arthropods); tells two chromosome ends joined from an inverted end piece. A few minutes for a 4 Gb assembly. `--telomere-5p/3p` take existing telo_scan bedgraphs; maps that already carry its 5p/3p tracks are read directly |
 | `--add-tracks` | write a copy of each map with these tracks, the BUSCO duplicate pairs / missing genes, and the sex chromosome tracks (`sex_chromosome`: 2 hemizygous, 1 the rest of a sex-linked stretch; `par`: 2 PAR, 1 candidate), for viewing in PretextView (needs PretextGraph). The bedgraphs are in `OUT_DIR/tracks/` in any case |
 | `--sex-system SYSTEM` | the species' sex chromosome system, if known (`XY`, `ZW`, `X0`, `Z0`, `X1X2Y`, `XY1Y2`, `Z1Z2W`, `ZW1W2`): tags the sex chromosome copies `X`/`Y`, `Z`/`W`, `X1`/`X2` ... |
+| `--gfa GFA --yahs-agp AGP` (each once per haplotype) | hifiasm's contig graph (`*.hap1.p_ctg.gfa`; with or without sequence) and the YaHS AGP that built the scaffolds from those contigs (`H1=path`, or a name containing `hap1`). Where the graph links the two contig ends YaHS put next to each other, the join is right: the gap is never cut (row `graph_link`), and `asm` closes it, dropping the overlap the graph reports after checking it in the sequence. Where the only link out of the left contig and the only one into the right go to one small contig that is a scaffold of its own, that contig fills the gap (row `graph_bridge`); `asm` puts it there and closes both sides. `OUT_DIR/<name>.graph_edits.tsv` lists every change |
+| `--utg-gfa P_UTG.gfa` (with `--gfa`, `--yahs-agp`) | hifiasm's unitig graph (uncompressed; the `noseq` file is enough for `run` and loads fast). A gap whose two contig ends a unitig path joins is not used to rearrange (row `graph_path`; a tip inversion or a cut on contact alone there is dropped, `graph_keep`; a cut the alignment or a telomere backs stands). In `asm`, contigs that overlap along a single path are joined |
+| `--fill-gaps` (`asm`, `run --pretext-to-asm`; needs the unitig GFA with sequence and hifiasm's read depth) | fill gaps from the unitig graph without duplicating what the assembly already has for that haplotype. Every path across the gap is examined: if the contigs overlap or abut along one, the gap is closed; if a path runs through another contig of this haplotype, that contig belongs there: it is put into the gap when it lies wholly on the path and is a scaffold of its own (also at joins the tool or you made; this needs the unitig GFA with sequence but not `--fill-gaps`), and is named in the report otherwise (nothing is copied); otherwise the gap is filled only from a path whose unitigs are at about twice the haploid read depth (collapsed homozygous sequence: two copies in the genome, one in the assembly, in the other haplotype). Haploid paths (the other haplotype's allele), repeats and gaps next to a circular contig (a tandem repeat unit) are not filled. Every decision is in `<name>.graph_edits.tsv`; the fills are in `OUT_DIR/<name>.gapfills.fa` (named `gapfill_N` in the output AGPs) |
 | `--hap-regex` | how to read the haplotype from a scaffold name (default `^(H\d+)_`) |
 
 Run `pretext-autocurate run --help` for every option.
@@ -149,6 +180,20 @@ savestates are the best way to improve the rules.
     pretext-autocurate info MAP.pretext                 # header, tracks, scaffolds
     pretext-autocurate dump STATE --map MAP.pretext     # a savestate in readable form
     pretext-autocurate convert --map MAP --state STATE --to agp|tsv|state --out FILE
+    pretext-autocurate asm --map MAP --state STATE --fasta ASM.fa --out-dir final
+
+`asm` builds the assembly files from a savestate (typically yours, after review) without
+exporting from PretextView: it writes the AGP PretextView would export and runs
+pretext-to-asm from [sanger-tol/agp-tpf-utils](https://github.com/sanger-tol/agp-tpf-utils)
+on it (FASTA and AGP per haplotype, chromosome lists, unlocs, haplotigs; Tree of Life
+naming). `run --pretext-to-asm` does the same for the pre-curation itself, in
+`OUT_DIR/assembly/`. Options: `--asm-name` (default: the FASTA name up to its first dot),
+`--asm-args "..."` (passed on, e.g. `--autosome-prefix SUPER_`). pretext-to-asm is not
+bundled: `pip install git+https://github.com/sanger-tol/agp-tpf-utils`; it writes a `.fai`
+next to the FASTA if there is none. Scaffolds too short to have a pixel in the map are not
+in a PretextView export; the tool's AGP lists them at the end, tagged `HAP1`/`HAP2` by
+their `H1_`/`H2_` prefix, so they join their haplotype instead of forming separate `h1`
+and `h2` assemblies.
 
 ## License
 
