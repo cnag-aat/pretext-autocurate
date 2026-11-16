@@ -50,6 +50,8 @@ pre-curates whatever scaffolds a curator is given.
 2. **A shared backbone per chromosome**: the tool already orders one copy along the other
    (`_project`). Pooling the Hi-C contacts of both copies on one coordinate system would
    give twice the signal for joins and cuts, which matters for sparse or MQ0-only maps.
+   Measured 2026-11-16 on curated gaps: no gain, the copies give nearly the same contact
+   (PROGRESS.md).
 3. **Phasing as an optimisation** (minimise inter-haplotype Hi-C within a group): a
    principled form of `--phasing none`, and a way to decide hard cases such as
    H1_scaffold_31 or H1_scaffold_44 on the owl.

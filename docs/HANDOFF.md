@@ -193,9 +193,12 @@ Curation quality, two-haplotype mode
    curator (needs species knowledge). Homomorphic sex chromosomes, and any sample of the
    homogametic sex, show no hemizygous stretch and are paired as autosomes (the
    `sex_summary` row says so); SCINKD-style k-mers would need reads of both sexes.
-3. **Shared Hi-C backbone** (from hapscotch). Map the MQ0 contacts of both copies onto
-   one coordinate system through the alignment and decide joins and cuts on the sum. Twice
-   the signal; this matters most for MQ0-only maps such as Troglobisium.
+3. ~~**Shared Hi-C backbone** (from hapscotch)~~ measured 2026-11-16, not built
+   (`tools/backbone_gaps.py`, see PROGRESS): the two copies give nearly the same contact
+   across each gap (correlation 0.97-0.99 on MQ0 maps), so pooling does not separate the
+   curator's cut and kept gaps any better (AUC 0.962 own copy, 0.969 pooled, Troglobisium).
+   The weak gaps are those with no mapped homolog (AUC 0.69 / 0.60), where there is
+   nothing to pool; that is where gap decisions need another signal.
 4. **Merges checked by alignment.** `merge_pairs` decides on end contact; when `--paf`
    is given, require the two pairs to be colinear pieces of one homolog, as `_project`
    already does for order.

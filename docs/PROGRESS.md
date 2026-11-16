@@ -1466,3 +1466,37 @@ too; one that does not fit under the 9-piece limit split goes in whole, as befor
   unchanged.
 - Owl: savestate, AGP and decisions identical.
 - Test: the X's layout order in `TestTroglobisium.test_curation`.
+
+## 2026-11-16: shared Hi-C backbone measured (HANDOFF suggestion 3): no gain
+
+Question: does pooling the Hi-C of both copies of a chromosome through the alignment
+(hapscotch / YaHS "backbone") tell the gaps a curator cut from those kept better than one
+copy? Measured before building anything: `tools/backbone_gaps.py`. For every gap inside a
+scaffold, contact across it as observed / expected (windows of up to 60 px on each side,
+2 px skipped); in the own copy, in the homologous windows of the other copy (when both map
+colinearly into one scaffold), the weaker of the two, pooled (sums of observed and
+expected), and pooled with the two cross blocks. Curator's call from the final savestate:
+kept if the two sides are still neighbours the same way round. AUC = how well the measure
+ranks cut gaps below kept ones.
+
+| Map | gaps (homolog mapped) | own | other | min | pooled | pooled + cross |
+|---|---|---|---|---|---|---|
+| Troglobisium MQ0 (savestate_final) | 154 (137 kept, 17 cut) | 0.962 | 0.969 | 0.966 | 0.969 | 0.967 |
+| owl MQ0 (curator_1_on_autocurate) | 15 (11 kept, 4 cut) | 0.955 | 0.955 | 0.955 | 0.955 | 0.886 |
+| owl MQ10, same gaps | 15 | 0.795 | 0.727 | 0.773 | 0.773 | 0.773 |
+
+- The two copies give nearly the same value at each gap: correlation 0.97 (Troglobisium
+  MQ0), 0.99 (owl MQ0), 0.91 (owl MQ10); median difference 0.03, 0.01, 0.1. At this depth
+  counting noise is not what makes a gap hard, and at MQ0 the reads of identical sequence
+  are shared between the copies anyway, so the other copy is not independent evidence.
+- Best single threshold on Troglobisium: 5 errors of 154 with the own copy, 5 pooled.
+- Where the other copy is also a gap (scaffold join in both, the case the backbone was
+  meant for): own already 0.995 (Troglobisium, 57 gaps) and 1.0 (owl, 7).
+- The hard gaps are those with no mapped homolog: AUC 0.69 (Troglobisium, 23 gaps, 9 cut)
+  and 0.60 (owl, 11 gaps, 6 cut). The backbone cannot help there: by definition there is
+  nothing to pool.
+- Limits: the map holds 8-bit display values, not read counts; owl numbers are small; the
+  curator's call is read from adjacency in the final layout.
+
+Decision: not built. Effort is better spent on gaps with no mapped homolog (divergent or
+hemizygous sequence, unpaired scaffolds), where single-copy contact is weakest.
