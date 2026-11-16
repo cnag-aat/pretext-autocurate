@@ -1,0 +1,45 @@
+{
+  "_comment": "Genomes for tools/score_all.py. Paths are relative to the fixtures directory ({F}) or the repository ({R}). 'run' is the pretext-autocurate run command line without --out-dir / --sweep; 'references' are curated savestates of the first map (curator = from scratch, corrections = the curator's edits on top of a tool output, biased towards that output).",
+  "cases": [
+    {
+      "name": "xgTylRafi",
+      "description": "gastropod, single haplotype",
+      "mode": "single",
+      "run": ["--map", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10_mq0.extensions.HR.pretext"],
+      "references": {"curator": "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10_mq0.extensions.HR.pretext.savestate_4"}
+    },
+    {
+      "name": "bAegFun",
+      "description": "boreal owl, two haplotypes, MQ0 + MQ10, ZW",
+      "mode": "allhaps",
+      "run": ["--map", "{F}/bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid_mq0.extensions.HR.pretext",
+              "--map", "{F}/bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid_mq10.extensions.HR.pretext",
+              "--fasta", "{F}/bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid.fa",
+              "--paf", "{F}/bAegFun_asm2_run1.H2_vs_H1.asm5.paf",
+              "--small-paf", "{F}/bAegFun_asm2_run1.small_vs_all.asm5.paf",
+              "--busco-table", "H1={F}/bAegFun_asm2_run1.hfsm.asm.hic.hap1.yhs_mq10.aves_odb12.full_table.tsv",
+              "--busco-table", "H2={F}/bAegFun_asm2_run1.hfsm.asm.hic.hap2.yhs_mq10.aves_odb12.full_table.tsv",
+              "--repeats", "{R}/work/bAegFun/red/red.repeats.bed",
+              "--telomere-motif", "TTAGGG", "--sex-system", "ZW",
+              "--threads", "8", "--work-dir", "{R}/work/bAegFun"],
+      "references": {"curator": "{F}/bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid_mq0.extensions.HR.pretext.savestate_6",
+                     "corrections": "{F}/bAegFun_asm2_run1.hfsm.asm.hic.yhs_mq10.diploid_mq0.extensions.HR.pretext.savestate_curator_1_on_autocurate"}
+    },
+    {
+      "name": "qqTroRaco",
+      "description": "pseudoscorpion, two haplotypes, MQ0 only, heavily rearranged, XY; hifiasm graphs",
+      "mode": "allhaps",
+      "run": ["--map", "{F}/qqTroRaco.hfsm.asm.bp.yhs_mq10.diploid_mq0.extensions.HR.pretext",
+              "--fasta", "{F}/qqTroRaco.hfsm.asm.bp.yhs_mq10.diploid.fa", "--no-small-align",
+              "--paf", "{F}/qqTroRaco.H2_vs_H1.asm5.paf",
+              "--telomere-motif", "TTAGG", "--sex-system", "XY",
+              "--gfa", "{F}/qqTroRaco_hifiasm_gfas_yahs_agps/qqTroRaco.hfsm.asm.bp.hap1.p_ctg.noseq.gfa",
+              "--gfa", "{F}/qqTroRaco_hifiasm_gfas_yahs_agps/qqTroRaco.hfsm.asm.bp.hap2.p_ctg.noseq.gfa",
+              "--yahs-agp", "{F}/qqTroRaco_hifiasm_gfas_yahs_agps/qqTroRaco.hfsm.asm.bp.hap1.yhs_mq10.agp",
+              "--yahs-agp", "{F}/qqTroRaco_hifiasm_gfas_yahs_agps/qqTroRaco.hfsm.asm.bp.hap2.yhs_mq10.agp",
+              "--utg-gfa", "{F}/qqTroRaco_hifiasm_gfas_yahs_agps/qqTroRaco.hfsm.asm.bp.p_utg.noseq.gfa",
+              "--threads", "8", "--work-dir", "{R}/work/qqTroRaco"],
+      "references": {"curator": "{F}/qqTroRaco.hfsm.asm.bp.yhs_mq10.diploid_mq0.extensions.HR.pretext.savestate_final"}
+    }
+  ]
+}

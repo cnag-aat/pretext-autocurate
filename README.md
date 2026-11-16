@@ -208,6 +208,12 @@ CNAG (https://www.cnag.eu); see [NOTICE](NOTICE).
 The tests need the development maps and curated savestates in `seed/fixtures/` (not in the
 repository: large and unpublished); without them most tests are skipped.
 
+    python3 tools/score_all.py                   # run every test genome and score it
+
+scores the tool against the curators' savestates on every genome listed in
+`tools/score_cases.json` (junctions, breaks, chromosome grouping, tags) and prints one
+table; add a genome by adding an entry there.
+
 - `CHANGELOG.md`: what changed per version
 - `docs/HANDOFF.md`: state of the code, conventions, open problems
 - `docs/PROGRESS.md`: dated log of methods tried and results on the test genomes

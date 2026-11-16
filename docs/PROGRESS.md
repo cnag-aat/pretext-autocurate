@@ -1765,3 +1765,38 @@ ends within 1.5 px).
 Released: sex chromosomes, hifiasm's graphs (`--gfa`, `--yahs-agp`, `--utg-gfa`,
 `--fill-gaps`), PretextView-exact AGP, `asm` / `run --pretext-to-asm`. 80 tests. What is left
 is in `docs/HANDOFF.md` (suggestions 5-18, the open points of 9, known gaps).
+
+## 2026-11-16: one scoring script over all genomes (baseline, v1.2.0)
+
+`tools/score_all.py` runs the tool on every case of `tools/score_cases.json` (a sweep at
+levels 0, 0.5, 1 for two haplotypes; reuses existing outputs in `score_out/` unless
+`--rerun`) and scores each savestate against each reference curation with
+`pretext_autocurate.score.compare`: junctions as in `tools/compare_layouts.py` (pieces of
+>= 15 px next to each other inside a chromosome, Unloc / Haplotig / FalseDuplicate aside),
+breaks (where neighbouring pixels of an input scaffold stop being neighbours; matched within
+3 px), the share of reference chromosomes with >= 90% in one tool chromosome, and tag
+agreement by bp. 9 min for the three genomes with cached alignments.
+
+| genome | level | reference | junctions supported / reproduced | breaks P / R | chromosomes >=90% in one | HAP1 agree | sex tags agree | Unloc agree | edits tool / ref | review |
+|---|---|---|---|---|---|---|---|---|---|---|
+| xgTylRafi | - | curator | 25/29 / 41/68 | 94% / 47% | 89% of 18 | - | - | 83% | 241 / 357 | 69 |
+| bAegFun | 0.00 | curator | 2/4 / 2/7 | 86% / 67% | 98% of 82 | 53% | 100% | 0% | 74 / 264 | 74 |
+| bAegFun | 0.50 | curator | 3/5 / 2/7 | 75% / 67% | 98% of 82 | 53% | 100% | 11% | 76 / 264 | 74 |
+| bAegFun | 1.00 | curator | 5/8 / 2/7 | 67% / 67% | 98% of 82 | 52% | 100% | 11% | 79 / 264 | 72 |
+| bAegFun | 0.00 | corrections | 0/4 / 0/0 | 100% / 58% | 100% of 74 | 91% | - | - | 74 / 80 | 74 |
+| bAegFun | 0.50 | corrections | 1/5 / 0/0 | 88% / 58% | 100% of 74 | 91% | - | - | 76 / 80 | 74 |
+| bAegFun | 1.00 | corrections | 2/8 / 0/0 | 78% / 58% | 100% of 74 | 89% | - | - | 79 / 80 | 72 |
+| qqTroRaco | 0.00 | curator | 19/25 / 25/53 | 82% / 47% | 88% of 128 | 78% | 41% | 0% | 178 / 335 | 36 |
+| qqTroRaco | 0.50 | curator | 24/32 / 30/53 | 85% / 61% | 89% of 128 | 78% | 100% | 0% | 191 / 335 | 38 |
+| qqTroRaco | 1.00 | curator | 29/42 / 34/53 | 81% / 68% | 91% of 128 | 79% | 100% | 0% | 218 / 335 | 46 |
+
+References: xgTylRafi savestate_4; owl savestate_6 (curator, from scratch) and
+savestate_curator_1_on_autocurate (the curator's corrections of an earlier tool output,
+biased towards it); Troglobisium savestate_final.
+
+- The trade-off the level controls shows on Troglobisium: from level 0 to 1, junction
+  recall 25 -> 34 of 53 and break recall 47% -> 68%, junction precision 76% -> 69%.
+- The owl needs few new junctions (7 in the curation); breaks and grouping are high.
+- Unloc tags of the tool and the curators hardly coincide on the two-haplotype genomes
+  (0-11%), with similar totals; HAP1 agrees with the owl curator's own curation on only 53%
+  (91% with their corrections). See HANDOFF 12 (a)-(c).

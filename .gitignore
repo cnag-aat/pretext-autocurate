@@ -3,6 +3,7 @@ seed/fixtures/
 # run outputs and caches
 out/
 out_*/
+score_out/
 work/
 __pycache__/
 *.pyc

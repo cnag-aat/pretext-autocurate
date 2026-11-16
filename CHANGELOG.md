@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `tools/score_all.py` (with `tools/score_cases.json` and `pretext_autocurate/score.py`):
+  runs the tool on every test genome and scores it against the curators' savestates
+  (junctions, breaks, chromosome grouping, tags by bp, edits, review items) in one table.
+  Baseline for v1.2.0 in `docs/PROGRESS.md`.
+
 ## 1.2.0 (2026-11-16)
 
 Sex chromosomes, hifiasm's graphs, and the final assembly files.

@@ -253,10 +253,19 @@ Evidence
     before PretextGraph; removes weak interstitial runs (measured on the owl, optional).
 
 Validation, so the rules keep improving
-12. **One scoring script over all fixtures** (`tools/score_all.py`): for every genome
-    with a curator savestate, run the tool at each level and report junction precision /
-    recall, cuts, pairs and tags against the curation, as a table to keep in PROGRESS.
-    Today the numbers come from separate tests and ad hoc runs.
+12. ~~**One scoring script over all fixtures**~~ done 2026-11-16: `tools/score_all.py`
+    with `tools/score_cases.json` and `pretext_autocurate/score.py` (junctions, breaks,
+    chromosome grouping, tags by bp, edits, review items); baseline table in PROGRESS. To add
+    a genome (next: icLarUrsu, diploid with GFAs): put the map(s), inputs and the curated
+    savestate in `seed/fixtures/`, add an entry to the cases file, run
+    `python3 tools/score_all.py --only NAME`. What the baseline points at:
+    (a) Unloc tags of the tool and the curator almost never coincide on the two-haplotype
+        genomes (0% on Troglobisium, 0-11% on the owl, with similar totals): the tool tags
+        different pieces; look at which;
+    (b) HAP1 (the better copy) agrees with the owl curator's own curation on 53% of the bp
+        (91% with their corrections of the tool): the choice of copy differs on about half
+        the chromosomes;
+    (c) Troglobisium at level 0: sex tags 41% (H2_scaffold_46 not chained at that level).
 13. **More genomes from the team, especially hard taxa** (not vertebrates, not
     butterflies): every corrected savestate (tool output + curator's edits) is a new
     test. Ask curators to send `autocurate.run.txt` with it (README already says so).
