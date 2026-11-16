@@ -1500,3 +1500,33 @@ ranks cut gaps below kept ones.
 
 Decision: not built. Effort is better spent on gaps with no mapped homolog (divergent or
 hemizygous sequence, unpaired scaffolds), where single-copy contact is weakest.
+
+## 2026-11-16: merges checked by alignment (HANDOFF suggestion 4): not built
+
+Question: with `--paf`, should a merge of two homolog pairs (P = a/b, Q = c/d; a joined to
+c in one haplotype, b to d in the other) require the merged copies to be colinear across
+the join? Measured on every merge `merge_pairs` makes on Troglobisium at level 1 and with
+relaxed thresholds (link_min 0.2, specific 1.5), against savestate_final: where the last
+3 Mb at each joined end align in the homolog, and whether any sequence of one pair aligns
+into the other.
+
+| Merge | Curator | Joined ends, aligned position from the homolog's end |
+|---|---|---|
+| H2_scaffold_8 + H2_scaffold_59 (H1_scaffold_2 halves) | one chromosome | 1.5-4.2 Mb inside |
+| H1_scaffold_10 halves (H2_scaffold_27 + H2_scaffold_62) | one chromosome | 0.1 and 3.3 Mb |
+| H2_scaffold_18 + H2_scaffold_66 | one chromosome | up to 1.2 Mb |
+| H2_scaffold_9 + H2_scaffold_57 | one chromosome | up to 3.9 Mb; one end unaligned |
+| H1_scaffold_24 + H1_scaffold_48 | undone | 0.0-0.4 Mb (end to end) |
+| H1_scaffold_16 + H1_scaffold_54 | undone | 0.0-0.1 Mb (end to end) |
+
+(H2_scaffold_60 + H2_scaffold_64 is one chromosome in the curation with mixed prefixes;
+its ends are 1.0-2.5 Mb inside.) Cross alignment (a to d, b to c) is at most 0.5 Mb in
+every case: no sequence spans a merge join, so the alignment cannot confirm one.
+
+- The false merges align perfectly end to end, as two real chromosome ends assembled to
+  the telomere in both haplotypes do; in the real ones the haplotypes broke at different
+  places. A colinearity rule would keep the false merges and reject the real.
+- Owl: no merge at any of these thresholds.
+- Decision: not built. Possible guard, six cases only: joined ends that coincide in both
+  haplotypes (within ~0.5 Mb) are likely chromosome ends; would need checking on more
+  merges before use.

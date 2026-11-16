@@ -199,9 +199,12 @@ Curation quality, two-haplotype mode
    curator's cut and kept gaps any better (AUC 0.962 own copy, 0.969 pooled, Troglobisium).
    The weak gaps are those with no mapped homolog (AUC 0.69 / 0.60), where there is
    nothing to pool; that is where gap decisions need another signal.
-4. **Merges checked by alignment.** `merge_pairs` decides on end contact; when `--paf`
-   is given, require the two pairs to be colinear pieces of one homolog, as `_project`
-   already does for order.
+4. ~~**Merges checked by alignment**~~ measured 2026-11-16, not built (see PROGRESS): no
+   sequence spans a merge join, and the two false Troglobisium merges align end to end
+   (their ends are real chromosome ends in both haplotypes) while the real ones have the
+   joined ends 1.5-4 Mb inside the homolog, so a colinearity check would keep the false
+   and reject the real. Open idea, too few cases yet: ends that coincide in both
+   haplotypes as a guard against merging chromosome ends without a telomere signal.
 5. **Two haplotypes in one scaffold**: a scaffold that aligns to itself (an off-diagonal
    line inside its own block at MQ0, plus a self-alignment) should be split and the halves
    paired.
