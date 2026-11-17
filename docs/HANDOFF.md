@@ -23,6 +23,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/pairing.py` | homolog pairing (`pair_homologs`, Hi-C or sequence), `same_prefix_pairs`, `merge_pairs` (pairs that are parts of one chromosome) |
 | `allhaps/sites.py` | `telomere_sites` (cut / invert_tip / keep at gaps), `alignment_breaks` |
 | `allhaps/evidence.py` | hifiasm graph evidence at sites (`_graph_evidence`, `_unitig_evidence`) |
+| `allhaps/chromjoin.py` | chromosome-level joins: pairs merged on specific, spread-out whole-block contact with repeat bins masked (arms apart across centromeric repeats); guards against cuts the pass made and small clustering chromosomes |
 | `allhaps/graphjoin.py` | joins only hifiasm's graph sees, between scaffold ends: `links` (evidence for `merge_pairs`), `place` (the smaller scaffold put at the larger one's end) |
 | `allhaps/selfdup.py` | two copies of one region in a scaffold: `self_duplications` (repeat / duplication / haplotypic by read depth), `apply_cuts` (a haplotypic copy cut out at the gaps around it), `rows` |
 | `allhaps/small.py` | small scaffolds (`place_small`): unloc, candidate, join, false duplicate |

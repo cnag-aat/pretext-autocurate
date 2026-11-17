@@ -40,6 +40,10 @@ THRESHOLDS = {
     "merge_specific": (4.0, 3.0, 2.0, "that contact over the pairs' third-best partner"),
     "merge_link_weak": (0.25, 0.15, 0.1, "weaker end contact accepted with chromosome-level contact (merge_block_min)"),
     "merge_block_min": (8.0, 5.0, 3.0, "whole-block contact of two copies over their trans background, both haplotypes"),
+    "chrom_margin": (2.5, 2.0, 1.6, "chromosome-level join: best partner over either copy's second best"),
+    "chrom_spread": (0.35, 0.25, 0.2, "chromosome-level join: share of the block's rows and columns with contact"),
+    "chrom_act": (0.0, 1.0, 1.0, "chromosome-level joins made (>= 0.5) or only listed for review"),
+    "chrom_min_mb": (12.0, 8.0, 5.0, "chromosome-level join: smallest copy (with its unlocs), Mb; small ones cluster"),
     "sex_chain_min": (0.08, 0.05, 0.03, "chromosome-level contact chaining a hemizygous piece"),
     "sex_chain_ratio": (4.0, 3.0, 2.0, "that contact over the next chromosome copy"),
     "conflict_min": (0.3, 0.5, 0.8, "end-contact gain that keeps an arrangement against the alignment"),
@@ -108,6 +112,25 @@ def _union(iv):
             tot += b - max(a, end)
             end = b
     return tot
+
+
+def split_block(bk, unit, step_bp):
+    """An alignment block shared out over the units it covers: [(query unit, target unit, query
+    bp)]. The query is walked in steps of about `step_bp` (a pixel), each step's target position
+    projected linearly (strand-aware); `unit(name, bp)` gives the unit at a position. A block
+    that runs across cuts (Troglobisium: H2_scaffold_4 aligns to H1_scaffold_1 0-58 Mb in one
+    56 Mb block, across three cuts) is credited to each pair of pieces it covers, not all to
+    the pieces at its midpoints."""
+    L = bk.qe - bk.qs
+    n = max(1, int(round(L / step_bp)))
+    step = L / n
+    acc = {}
+    for k in range(n):
+        f = (k + 0.5) / n
+        tm = bk.ts + f * (bk.te - bk.ts) if bk.same_strand else bk.te - f * (bk.te - bk.ts)
+        key = (unit(bk.q, bk.qs + f * L), unit(bk.t, tm))
+        acc[key] = acc.get(key, 0.0) + step
+    return [(x, y, bp) for (x, y), bp in acc.items()]
 
 
 def write_rows(rows, path):

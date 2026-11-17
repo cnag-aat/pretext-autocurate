@@ -216,12 +216,13 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
     def test_pairs_of_one_chromosome_are_merged(self):
         """Two homolog pairs whose ends join in both haplotypes are one chromosome. Each merge
         here is one chromosome in the curation (H1_scaffold_2 was cut by the tool and the curator).
-        The last has weak end contact and is merged on whole-block contact (2026-11-17); the
-        curator's H1_scaffold_24 + H1_scaffold_64 is merged too, but only with alignments."""
+        H1_scaffold_55 has weak end contact and is merged on whole-block contact; the last two
+        on chromosome-level contact alone (chromjoin, 2026-11-17)."""
         merged = {frozenset((r["scaffold"].split(":")[0], r["partner"].split(":")[0])): r for r in self.rows if r["action"] == "merge"}
         self.assertEqual(set(merged), {frozenset(("H1_scaffold_2", "H2_scaffold_59")), frozenset(("H2_scaffold_64", "H1_scaffold_66")),
                                        frozenset(("H2_scaffold_62", "H1_scaffold_10")),
-                                       frozenset(("H1_scaffold_55", "H2_scaffold_57"))})
+                                       frozenset(("H1_scaffold_55", "H2_scaffold_57")),
+                                       frozenset(("H1_scaffold_62", "H2_scaffold_66")), frozenset(("H2_scaffold_63", "H1_scaffold_64"))})
         for r in merged.values():
             host = r["evidence"].split("the pair ")[1].split(" are parts")[0].split(" / ")
             ga = set(self.groups[r["scaffold"].split(":")[0]]) | set(self.groups[r["partner"].split(":")[0]])

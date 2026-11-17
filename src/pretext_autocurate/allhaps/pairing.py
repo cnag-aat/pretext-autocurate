@@ -3,7 +3,7 @@
 pieces of one chromosome)."""
 import re
 import numpy as np
-from .common import Pair, _level, _mean0, _union
+from .common import Pair, _level, _mean0, _union, split_block
 from .small import _small_alignments
 
 
@@ -66,19 +66,20 @@ def pair_homologs(pt, hap_regex=r"^(H\d+)_", min_bins=4, score_min=None, margin=
             return int(pt.orig_scaffold[px])
 
         # per unit pair: aligned bp at mapq >= 30 (and how much on the same strand) for the
-        # score, and bp at any mapq for `loose`; a block counts for the units of its midpoints
+        # score, and bp at any mapq for `loose`; a block is shared out over the units it covers
+        # (split_block: one long block can run across cuts)
         acc, any_bp = {}, {}
         for bk in blocks:
-            x, y = unit(bk.q, (bk.qs + bk.qe) / 2), unit(bk.t, (bk.ts + bk.te) / 2)
-            if x is None or y is None or x == y:
-                continue
-            key = (min(x, y), max(x, y))
-            any_bp[key] = any_bp.get(key, 0) + bk.qe - bk.qs          # every mapping quality
-            if bk.mapq < 30:
-                continue
-            a_ = acc.setdefault(key, [0, 0])
-            a_[0] += bk.qe - bk.qs
-            a_[1] += (bk.qe - bk.qs) if bk.same_strand else 0
+            for x, y, bp in split_block(bk, unit, bpp):
+                if x is None or y is None or x == y:
+                    continue
+                key = (min(x, y), max(x, y))
+                any_bp[key] = any_bp.get(key, 0) + bp          # every mapping quality
+                if bk.mapq < 30:
+                    continue
+                a_ = acc.setdefault(key, [0, 0])
+                a_[0] += bp
+                a_[1] += bp if bk.same_strand else 0
         loose = {}
         for (x, y), bp in any_bp.items():
             loose.setdefault(x, []).append((bp, y))

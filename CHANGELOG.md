@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Alignment blocks are shared out over the cut pieces they cover (`common.split_block`)
+  instead of being credited to the pieces at their midpoints: one 56 Mb Troglobisium block
+  across three cuts had left H1_scaffold_1's first 25 Mb and its homolog H2_scaffold_4
+  33-58 Mb unpaired (now one chromosome, as the curator laid it out).
+- Chromosome-level joins (`allhaps/chromjoin.py`, curator: chromosome arms apart across
+  centromeric repeats touch only weakly, over their whole length; common in beetles, hard to
+  see): two pairs are merged when, with repeat bins masked (coverage, telomere signal,
+  promiscuous bins), their copies are each other's best partner by `chrom_margin`, with
+  contact spread over `chrom_spread` of the block (a hot spot from a shared repeat does not
+  count), confirmed in the other haplotype, never across a cut the pass made, and each side
+  at least `chrom_min_mb` (small chromosomes cluster). Level 0: review rows
+  `merge_candidate` only. Troglobisium: the H2_scaffold_18 / 66 chromosome; owl unchanged.
+
 - Joins only hifiasm's graph sees are made (curator's review of the Troglobisium rows: all
   should be placed): `allhaps/graphjoin.py` puts the smaller scaffold at the larger one's
   end as the graph orients it, ahead of what the tool had put there; rows `graph_join`, or

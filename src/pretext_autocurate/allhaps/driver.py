@@ -6,11 +6,11 @@ from ..mapstate import MapState, plan_edits
 from ..pretextio import SegmentedMap
 from ..savestate import SaveState, Edit, Waypoint, BREAK_DELTA
 from .arrange import _adjacency, _aligned_bp, _aligned_dir, _block_index, _contig_conflicts, _homolog_dir, _project, arrange_pieces
-from .common import Thresholds, _signal, _union
+from .common import Thresholds, _signal, _union, split_block
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
-from . import graphjoin, selfdup
+from . import chromjoin, graphjoin, selfdup
 from .small import place_small
 from .state import Run
 
@@ -158,12 +158,12 @@ def _merge(run_):
         size = lambda P: npx_[P.a] + npx_[P.b]
         root = {}
         find = lambda P: find(root[id(P)]) if id(P) in root else P    # union-find on pairs
-        for v, P, Q, x, y, how in merge_pairs(pt, sg_arr, pairs, hap, link_min=th.merge_link_min,
-                                              specific=th.merge_specific, link_weak=th.merge_link_weak,
-                                              block_min=th.merge_block_min, graph_links=glinks):
+
+        def merge(P, Q, score, text):
+            """Q's two units go into the chains of P's copies (the larger pair hosts)."""
             P, Q = find(P), find(Q)
             if P is Q:
-                continue
+                return
             if size(Q) > size(P):
                 P, Q = Q, P
             root[id(Q)] = P
@@ -176,10 +176,36 @@ def _merge(run_):
                     host_of[old_u] = side[hap[new_u]]
             arr_rows.append(dict(
                 action="merge", scaffold=pt.names[Q.a], length_mb=round(npx_[Q.a] * pt.bp_per_pix / 1e6, 2),
-                partner=pt.names[Q.b], strand="", tag="", score=round(v, 2), next_best="",
-                evidence=f"this pair and the pair {pt.names[P.a]} / {pt.names[P.b]} are parts of one chromosome: their ends "
-                         f"touch at {v:.2f} of adjacent sequence in both haplotypes (the weaker of the two){how}; "
+                partner=pt.names[Q.b], strand="", tag="", score=score, next_best="",
+                evidence=f"this pair and the pair {pt.names[P.a]} / {pt.names[P.b]} are parts of one chromosome: {text}; "
                          "laid out and painted as one chromosome"))
+        for v, P, Q, x, y, how in merge_pairs(pt, sg_arr, pairs, hap, link_min=th.merge_link_min,
+                                              specific=th.merge_specific, link_weak=th.merge_link_weak,
+                                              block_min=th.merge_block_min, graph_links=glinks):
+            merge(P, Q, round(v, 2), f"their ends touch at {v:.2f} of adjacent sequence in both haplotypes (the weaker "
+                                     f"of the two){how}")
+        # chromosome-level contact alone (arms apart across centromeric repeats): chromjoin
+        extra = {}
+        for u_, h_ in host_of.items():
+            extra.setdefault(h_, []).append(u_)
+        for c_, lst in attach.items():
+            extra.setdefault(c_, []).extend(x["u"] for x in lst)
+        for c_, lst in extra_of.items():                    # further pieces bound for the copy's chain
+            extra.setdefault(c_, []).extend(lst)
+        for d in chromjoin.candidates(pt, pairs, hap, extra, margin=th.chrom_margin, spread_min=th.chrom_spread,
+                                      min_mb=th.chrom_min_mb):
+            text = (f"chromosome-level contact (repeat bins masked) between {pt.names[d['x']]} and {pt.names[d['y']]} is "
+                    f"{d['ratio']:.1f}x their background, {d['ratio'] / max(d['second'], 1e-9):.1f}x either one's next "
+                    f"partner, spread over {100 * d['spread']:.0f}% of the block; between their homologs "
+                    f"{d['ratio_other']:.1f}x, {100 * d['spread_other']:.0f}%; their ends need not touch (chromosome arms "
+                    "apart across centromeric repeats)")
+            if th.chrom_act >= 0.5:
+                merge(d["P"], d["Q"], round(d["ratio"], 1), text)
+            else:
+                arr_rows.append(dict(
+                    action="merge_candidate", scaffold=pt.names[d["y"]], length_mb=round(npx_[d["y"]] * pt.bp_per_pix / 1e6, 2),
+                    partner=pt.names[d["x"]], strand="", tag="", score=round(d["ratio"], 1), next_best="",
+                    evidence=text + "; not merged at this level (review)"))
         # unlocs and extra pieces of a merged unit go with its host copy
         for u_, h_ in host_of.items():
             if attach.get(u_):
@@ -439,13 +465,14 @@ def _reference(run_):
         for bk in blocks:
             if bk.mapq < 30:
                 continue
-            x, y = unit_at(bk.q, (bk.qs + bk.qe) / 2), unit_at(bk.t, (bk.ts + bk.te) / 2)
-            if x is None or y is None or x == y:
-                continue
-            acc.setdefault(x, {}).setdefault(y, 0)
-            acc[x][y] += bk.qe - bk.qs
-            acc.setdefault(y, {}).setdefault(x, 0)
-            acc[y][x] += bk.te - bk.ts
+            r_ = (bk.te - bk.ts) / max(bk.qe - bk.qs, 1)         # target bp per query bp
+            for x, y, bp in split_block(bk, unit_at, raw.bp_per_pix):
+                if x is None or y is None or x == y:
+                    continue
+                acc.setdefault(x, {}).setdefault(y, 0)
+                acc[x][y] += bp
+                acc.setdefault(y, {}).setdefault(x, 0)
+                acc[y][x] += bp * r_
         min_loose = th.min_loose                         # smallest loose scaffold, px
         for v, d in acc.items():
             if v in mate_of or v in host_of or npx_[v] < min_loose:

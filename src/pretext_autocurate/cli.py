@@ -110,6 +110,7 @@ REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs"
                   "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
                   "graph_keep": "unitig path across the gap: rearrangement there dropped",
                   "graph_join_candidate": "scaffold ends only the hifiasm graph joins: not made",
+                  "merge_candidate": "chromosome-level contact says one chromosome: not merged at this level",
                   "self_duplication": "two copies of one region in a scaffold (cut only if haplotypic, at a gap)",
                   "sex_boundary": "sex chromosome meets another chromosome, not cut",
                   "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
