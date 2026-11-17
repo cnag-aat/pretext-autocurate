@@ -3,20 +3,35 @@
 Prepared 2026-11-17. Goal: the same results, byte for byte, from code in small modules,
 each step a function with its own tests on synthetic maps.
 
-## Status (2026-11-17, end of session)
+## Status: done (2026-11-17)
 
-- Step 1 done: `tools/golden.py` written; `record` ran (47 files from 5 runs, 8.5 min, in
-  `golden_out/golden.json`, git-ignored). The determinism check (`check` on unchanged code)
-  was started and stopped before it finished: run it first next time; it must say
-  "identical" before any move.
-- Step 2 prepared, not run: `tools/split_allhaps_moves.py` generates the package from
-  `allhaps.py` (dry run prints the plan; `--write` writes it and deletes allhaps.py). No
-  import cycles. Before `--write`, fix one thing in it: the moved functions import siblings
-  inside their bodies (`from .misjoin`, `from .tracks`, `from . import sexchrom`,
-  `from .busco` at allhaps.py lines 352, 469, 1559, 2154, 2169); in the package these must
-  become `from ..` (rewrite `from .` to `from ..` inside each moved segment). Then
-  `golden.py check`, the full test suite, and delete the script.
-- `allhaps.py` itself is unchanged.
+All seven steps done; `tools/golden.py check` said "identical: 47 files in 5 runs" after
+each of steps 2-5, and the full test suite passes.
+
+- Steps 2-3: the package `allhaps/` (common, pairing, sites, evidence, small, arrange,
+  driver; `__init__` re-exports the old names) by pure moves; every `lv.at(...)` became a
+  named field of `Thresholds` (`common.THRESHOLDS`: name -> values at level 0, 0.5, 1 and
+  what it decides).
+- Steps 4-5: `curate_allhaps` calls nine steps (`driver.STEPS`), each a function of a
+  shared `Run` (`state.py` lists what each step sets). The bodies were copied unchanged by a
+  generator that unpacks, per step, the names whose first use in the step is a read and
+  stores the names later steps read (comprehension and lambda variables, arguments of nested
+  functions, names bound inside nested functions and `x += ...` handled). The layout phase
+  became `_rows` (decision rows that do not depend on the layout) and `_layout`; the
+  layout-only setup moved from the start of the old phase to `_layout` (pure computations,
+  output unchanged).
+- Step 6: `tests/test_steps.py`, 11 tests on toy genomes with synthetic alignment blocks
+  (`synth.toy_blocks`), using `curate_allhaps(..., stop_after=step)`. Found on the way:
+  - `place_small` crashed (IndexError) on a map with a single homolog pair; fixed (the
+    runner-up contact is 0 when there is none). No effect on real genomes.
+  - Without alignments, a chromosome cut into two pieces in one haplotype and whole in the
+    other leaves all three unpaired: the MQ0 homology score samples the block's stretched
+    diagonal, which misses the homology of a piece shorter than its homolog (known; sliding
+    was tried and made real pairings worse). With alignments it pairs and rejoins correctly.
+    Tests use alignments for these cases.
+  - `merge_pairs` looks only at copies of 60 px or more (`min_px`); toy tests of merging use
+    a 1024-px map.
+- Step 7: HANDOFF module table and item 15, README, CHANGELOG.
 
 ## Where it stands
 

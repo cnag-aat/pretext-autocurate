@@ -6,11 +6,13 @@ from a toy genome: chromosomes of each haplotype, assembled into scaffolds that 
 pieces of different chromosomes (misjoins) or leave a chromosome in several scaffolds.
 Contact decays with distance within a chromosome copy; at MQ0 the two copies of a chromosome
 also share contact along the homology line (reads of identical sequence map to either copy).
+`toy_blocks` gives the alignment blocks between the haplotypes of the same toy genome.
 """
 import struct
 
 import numpy as np
 
+from . import homology
 from .pretextio import deflate
 
 
@@ -136,3 +138,34 @@ def toy_map(path, scaffolds, chrom_px, npix=512, bp_per_px=10000, homolog=0.35, 
         cov[(ch == c_) & (hp == h_)] = int(100 * f)
     write_pretext(path, names, lengths, np.clip(m, 0, 255), graphs={"gap": gap, "coverage": cov})
     return {p: px_cell[p] for p in range(npix)}
+
+
+def toy_blocks(scaffolds, bp_per_px=10000, query_hap=2):
+    """Blocks (homology.Block) of every `query_hap` scaffold piece against the pieces of the
+    same chromosome in the other haplotypes, in each scaffold's own bp (a gap pixel between
+    pieces counts, as in `toy_map`): what minimap2 would give for the toy genome."""
+    pieces = []                       # (scaffold, chromosome, hap, a, b, rev, first cell)
+    for name, ps in scaffolds:
+        k = 0
+        for i, (ch, hap, a, b, rev) in enumerate(ps):
+            if i:
+                k += 1                # the gap pixel
+            pieces.append((name, ch, hap, a, b, rev, k))
+            k += b - a
+    cell = lambda p, pos: p[6] + ((p[4] - 1 - pos) if p[5] else (pos - p[3]))
+    out = []
+    for q in pieces:
+        if q[2] != query_hap:
+            continue
+        for t in pieces:
+            if t[2] == query_hap or t[1] != q[1]:
+                continue
+            a, b = max(q[3], t[3]), min(q[4], t[4])
+            if b <= a:
+                continue
+            qc = sorted((cell(q, a), cell(q, b - 1)))
+            tc = sorted((cell(t, a), cell(t, b - 1)))
+            n = (b - a) * bp_per_px
+            out.append(homology.Block(q[0], qc[0] * bp_per_px, (qc[1] + 1) * bp_per_px, t[0], tc[0] * bp_per_px,
+                             (tc[1] + 1) * bp_per_px, q[5] == t[5], n, 60))
+    return out

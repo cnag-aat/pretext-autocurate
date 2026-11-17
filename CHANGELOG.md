@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `allhaps.py` split into the package `allhaps/` (common, pairing, sites, evidence, small,
+  arrange, driver, state); `curate_allhaps` is now nine steps over a shared `Run`
+  (`driver.STEPS`, `stop_after=` for tests), and every level-dependent threshold is named
+  (`common.THRESHOLDS`, `Thresholds`). Outputs byte-identical on all golden runs
+  (`tools/golden.py`). New `tests/test_steps.py` (per-step tests on toy genomes) and
+  `synth.toy_blocks` (alignment blocks for a toy genome). Fixed on the way: `place_small`
+  crashed on a map with a single homolog pair.
+
 - Joins only hifiasm's graph sees, between the outer ends of two scaffolds (a contig link
   that is the only one at both ends, or mutually nearest ends along the unitig graph),
   where one scaffold is chromosome-size and the layout does not make the join: review rows

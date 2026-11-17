@@ -213,8 +213,17 @@ Most tests need the development maps and curated savestates in `seed/fixtures/` 
 the repository: large and unpublished) and skip themselves without them. The rest run
 anywhere in about a second, among them `tests/test_synthetic.py`, which writes small
 synthetic `.pretext` maps of a toy genome (`pretext_autocurate/synth.py`: deliberate
-misjoins, two haplotypes) and runs the whole pass and the command line on them. GitHub
+misjoins, two haplotypes) and runs the whole pass and the command line on them, and
+`tests/test_steps.py`, which tests each step of the allhaps pass on its own (sites, pairing,
+merges, small scaffolds, arrangement, the other copy following the reference, layout) with
+synthetic alignments (`synth.toy_blocks`) and `curate_allhaps(..., stop_after=step)`. GitHub
 Actions runs those on every push (`.github/workflows/tests.yml`).
+
+The allhaps pass is the package `pretext_autocurate/allhaps/`: `driver.py` runs the steps
+listed in `STEPS` over a shared state (`state.Run`), and every level-dependent threshold is
+named in `common.THRESHOLDS`. A refactoring must leave the outputs unchanged:
+`python3 tools/golden.py check` compares them byte for byte with the recorded runs
+(`record` first; needs the fixtures).
 
     python3 tools/score_all.py                   # run every test genome and score it
 
