@@ -30,10 +30,10 @@ H2_A = [("H2_scaffold_1", [("A", 2, 0, 100, False)])]
 class Toy:
     """A toy genome on disk, its map, truth and alignment blocks."""
 
-    def __init__(self, scaffolds, blocks=True, drop_blocks=(), npix=512):
+    def __init__(self, scaffolds, blocks=True, drop_blocks=(), npix=512, **map_kw):
         self.d = tempfile.TemporaryDirectory()
         path = os.path.join(self.d.name, "toy.pretext")
-        self.truth = toy_map(path, scaffolds, CHROMS, npix=npix, bp_per_px=BPP)
+        self.truth = toy_map(path, scaffolds, CHROMS, npix=npix, bp_per_px=BPP, **map_kw)
         self.pt = Pretext(path)
         bl = toy_blocks(scaffolds, BPP) if blocks else None
         self.blocks = [b for b in bl if b.q not in drop_blocks and b.t not in drop_blocks] if bl else None
@@ -89,6 +89,46 @@ class TestSites(unittest.TestCase):
             self.assertEqual(run_.cuts, [])
         finally:
             t.close()
+
+
+class TestSelfDuplication(unittest.TestCase):
+    """Two copies of one region in a scaffold (allhaps.selfdup): H2_scaffold_1 holds its own A
+    and, between two gaps, a copy of A 45-60 that H1 also holds. MQ0 contact between the
+    haplotypes is high (0.9 of within a copy), as for near-identical alleles, so contact alone
+    does not cut those gaps. Read depth (the coverage track) decides."""
+    SC = [("H1_scaffold_1", [("A", 1, 0, 100, False)]),
+          ("H2_scaffold_1", [("A", 2, 0, 60, False), ("A", 1, 45, 60, False), ("A", 2, 60, 100, False)])] + REST
+
+    def run_case(self, depth):
+        t = Toy(self.SC, homolog=0.9, coverage={("A", 1, 45, 60): depth} if depth != 1 else None)
+        try:
+            run_ = t.run(stop_after="_setup")
+            rows, st, _ = t.run()
+            return t.layout(st), rows, [t.pt.names[t.pt.orig_scaffold[q]] for q, _, _ in run_.cuts]
+        finally:
+            t.close()
+
+    def test_haplotypic_copy_cut_out(self):
+        """Half depth on the copy and on H1's copy (the same allele twice): cut out at the gaps
+        around it, tagged FalseDuplicate, and H2's A joined again whole."""
+        lay, rows, cuts = self.run_case(0.5)
+        self.assertEqual([r["score"] for r in rows_of(rows, "self_duplication")], ["haplotypic"])
+        self.assertEqual(cuts, ["H2_scaffold_1", "H2_scaffold_1"])
+        self.assertEqual([r["tag"] for r in rows_of(rows, "false_duplicate")], ["FalseDuplicate"])
+        self.assertTrue(whole(lay, "A2", 100), lay)
+
+    def test_duplication_left(self):
+        """Every copy at normal depth: a duplication this haplotype carries; not cut."""
+        lay, rows, cuts = self.run_case(1)
+        self.assertEqual([r["score"] for r in rows_of(rows, "self_duplication")], ["duplication"])
+        self.assertEqual(cuts, [])
+        self.assertEqual([x[0] for x in lay if x[0] in ("A1", "A2")], ["A1", "A2", "A1", "A2"])
+
+    def test_repeat_left(self):
+        """About twice normal depth: collapsed repeats or paralogs; not cut."""
+        lay, rows, cuts = self.run_case(2.0)
+        self.assertEqual([r["score"] for r in rows_of(rows, "self_duplication")], ["repeat"])
+        self.assertEqual(cuts, [])
 
 
 class TestPairing(unittest.TestCase):

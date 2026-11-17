@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Two copies of one region in a scaffold (`allhaps/selfdup.py`): from the alignment between
+  the haplotypes, review rows `self_duplication` classed by read depth (coverage track) as
+  repeat, duplication or haplotypic. Curator's rule: only a haplotypic copy (it and the other
+  haplotype's copy at about half depth) with a gap between the copies is cut out, at the
+  gaps around it; the scaffold's sides are joined again as assembled and the copy is tagged
+  FalseDuplicate. Troglobisium: 12 rows, none haplotypic; owl: none. `tools/self_dups.py`
+  lists such copies from a PAF. `synth.toy_map` takes coverage per region; `toy_blocks`
+  reads a scaffold's haplotype from its name.
+
 - `allhaps.py` split into the package `allhaps/` (common, pairing, sites, evidence, small,
   arrange, driver, state); `curate_allhaps` is now nine steps over a shared `Run`
   (`driver.STEPS`, `stop_after=` for tests), and every level-dependent threshold is named

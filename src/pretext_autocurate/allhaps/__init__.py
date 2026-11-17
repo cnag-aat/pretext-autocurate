@@ -23,7 +23,10 @@ Pipeline (`curate_allhaps`):
 Every act-or-flag threshold goes through `Level` (0 conservative .. 1 aggressive).
 Open items are listed in docs/HANDOFF.md.
 
-Modules: common, pairing, sites, evidence, small, arrange, driver.
+Two copies of one region in a scaffold (`selfdup`): review rows; a haplotypic copy (by read
+depth) with a gap between the copies is cut out.
+
+Modules: common, pairing, sites, evidence, selfdup, small, arrange, driver, state.
 A diagnostic that monkeypatches a step (e.g. `place_small`) must patch it where it is used (`allhaps.driver`), not here.
 """
 from .common import Level, Pair, THRESHOLDS, Thresholds, _mean0, _signal, _level, _union, write_rows  # noqa: F401

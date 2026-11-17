@@ -10,6 +10,7 @@ from .common import Thresholds, _signal, _union
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
+from . import selfdup
 from .small import place_small
 from .state import Run
 
@@ -68,6 +69,10 @@ def _setup(run_):
     sites = telomere_sites(raw, first_pairs, hi, hap_regex, blocks, gap_max=th.gap_max,
                            sharp_max=th.sharp_max, tip_max=th.tip_max) if do_cuts else []
     graph_rows = _graph_evidence(raw, sites, graph_junctions or []) + _unitig_evidence(raw, sites, unitig_paths or [])
+    # two copies of one region in a scaffold: cut at a gap only when they are haplotypic
+    dups = selfdup.self_duplications(raw, blocks) if blocks is not None and do_cuts else []
+    sites = selfdup.apply_cuts(sites, dups)
+    graph_rows += selfdup.rows(raw, dups)
     cuts = [(x["q"], x["s"], x["reason"]) for x in sites if x["action"] == "cut"]
     flips = [x["tip"] for x in sites if x["action"] == "invert_tip"]
     pt = SegmentedMap(raw, [q for q, _, _ in cuts])          # from here on, units are cut pieces
@@ -76,6 +81,7 @@ def _setup(run_):
         pairs += same_prefix_pairs(pt, info, small_blocks)
     run_.cuts, run_.flips, run_.graph_rows, run_.info, run_.pairs = cuts, flips, graph_rows, info, pairs
     run_.pt, run_.sites, run_.sx = pt, sites, sx
+    run_.cut_out = sorted(q for d in dups if d["cut"] for q in d["cut"])       # gaps a copy was cut out at
 
 
 def _small(run_):
@@ -241,7 +247,7 @@ def _arrange(run_):
     joined, mate_of, members, npx_ = run_.joined, run_.mate_of, run_.members, run_.npx_
     orient_gain_, pt, raw, sex_forced = run_.orient_gain_, run_.pt, run_.raw, run_.sex_forced
     sg_arr, soft, sol, span, start_, th = run_.sg_arr, run_.soft, run_.sol, run_.span, run_.start_, run_.th
-    tips = run_.tips
+    tips, cut_out = run_.tips, run_.cut_out
     # 3. phase 1: each copy (with the units merged into it) arranged by end contact alone
     for u in (sorted(mate_of, key=lambda u: start_[u]) if do_arrange else []):
         if u in host_of:
@@ -304,6 +310,22 @@ def _arrange(run_):
                                                       guide=guide)
         sol[u].update(adj=adj, best=best, was=was)
         placed_only = None
+        # Pieces of one scaffold that are apart only because a haplotypic copy was cut out
+        # between them (selfdup) are one chromosome copy: joined again as assembled.
+        same = [v for v in others if v in extra_of.get(u, []) and raw.orig_scaffold[start_[v]] == raw.orig_scaffold[start_[u]]
+                and any(min(start_[u], start_[v]) <= q < max(start_[u], start_[v]) for q in cut_out)]
+        if same and not forced and (arr == init or best - was < gain_min):
+            own = sorted([p for i, p in enumerate(pieces) if i < n_own or any(i in block_of[v] for v in same)])
+            arranged[u] = [(a, b, False) for a, b in own]
+            for v in same:
+                joined[v] = u
+            sol[u]["others"], sol[u]["row"] = same, len(arr_rows)
+            arr_rows.append(dict(
+                action="rearrange", scaffold=pt.names[u], length_mb=round(npx_[u] * pt.bp_per_pix / 1e6, 2), partner="",
+                strand="", tag="", score=round(best, 2), next_best=round(was, 2),
+                evidence="pieces of one scaffold joined again as assembled (" + ", ".join(span(a, b) for a, b in own)
+                         + "): a haplotypic copy was cut out between them (see the self_duplication row)"))
+            continue
         if not forced and (arr == init or best - was < gain_min):
             # Not enough gain to rearrange the copy itself. Its attached pieces large enough
             # to carry an end signal still belong in it, not at its end as unlocs (curator's

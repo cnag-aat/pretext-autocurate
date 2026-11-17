@@ -23,6 +23,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/pairing.py` | homolog pairing (`pair_homologs`, Hi-C or sequence), `same_prefix_pairs`, `merge_pairs` (pairs that are parts of one chromosome) |
 | `allhaps/sites.py` | `telomere_sites` (cut / invert_tip / keep at gaps), `alignment_breaks` |
 | `allhaps/evidence.py` | hifiasm graph evidence at sites (`_graph_evidence`, `_unitig_evidence`) |
+| `allhaps/selfdup.py` | two copies of one region in a scaffold: `self_duplications` (repeat / duplication / haplotypic by read depth), `apply_cuts` (a haplotypic copy cut out at the gaps around it), `rows` |
 | `allhaps/small.py` | small scaffolds (`place_small`): unloc, candidate, join, false duplicate |
 | `allhaps/arrange.py` | `arrange_pieces` (order/orientation within a copy), `_project` (the other copy follows the reference), `_contig_conflicts` |
 | `allhaps/driver.py` | `curate_allhaps`: the steps in `STEPS` (`_setup`, `_small`, `_merge`, `_sex_chain`, `_arrange`, `_reference`, `_follow`, `_rows`, `_layout`), each a function of a shared `Run` (`allhaps/state.py`); `stop_after=` returns the state after a step |
@@ -214,9 +215,20 @@ Curation quality, two-haplotype mode
    joined ends 1.5-4 Mb inside the homolog, so a colinearity check would keep the false
    and reject the real. Open idea, too few cases yet: ends that coincide in both
    haplotypes as a guard against merging chromosome ends without a telomere signal.
-5. **Two haplotypes in one scaffold**: a scaffold that aligns to itself (an off-diagonal
-   line inside its own block at MQ0, plus a self-alignment) should be split and the halves
-   paired.
+5. ~~**Two haplotypes in one scaffold**~~ done 2026-11-17 (`allhaps/selfdup.py`, curator's
+   rule: split only at a gap, and only with evidence that the copies are haplotypic, not
+   paralogous; read-depth classes after Flagger): two stretches of one scaffold that align to
+   the same stretch of the other haplotype are a `self_duplication` review row, classed by
+   the coverage track as `repeat` (about 2x or more), `duplication` (all copies normal) or
+   `haplotypic` (that copy and the other haplotype's at about half depth, the other copy
+   normal). Only `haplotypic` with a gap between the copies acts: the half-depth copy is cut
+   out at the gaps around it (then tagged FalseDuplicate by the small-scaffold step) and the
+   scaffold's two sides joined again as assembled; a gap the hifiasm graph backs is not cut.
+   Troglobisium: 12 rows, none haplotypic (fold-backs at gaps are repeats, H2_scaffold_17's
+   end piece is a duplication); owl: none (`tools/self_dups.py` lists them from a PAF).
+   Still open: the H2-against-H1 PAF (primary only) finds a double copy in H2 only; H1 needs
+   the reverse alignment. The hifiasm unitig graph (two copies on the two sides of one
+   bubble) would be a second, independent test of "haplotypic".
 6. **`--phasing none` as an optimisation** (from hapscotch): assign pieces to haplotypes
    to minimise inter-haplotype contact within a chromosome; a principled way to decide
    cases like owl H1_scaffold_31 / H1_scaffold_44, which now rest on fixed rules.

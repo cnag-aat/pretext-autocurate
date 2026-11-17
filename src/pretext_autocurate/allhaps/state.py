@@ -7,8 +7,8 @@ steps set them:
                (Thresholds at the run's level), hi, blocks, small_blocks, busco_hits,
                phasing, hap_regex, sex_system, same_hap_blocks, graph_junctions,
                unitig_paths, do_cuts, do_place, do_arrange, level
-  _setup       sx (sex chromosomes, sexchrom.analyse), sites, cuts, flips, graph_rows,
-               pairs, info
+  _setup       sx (sex chromosomes, sexchrom.analyse), sites, cuts, flips, graph_rows (with
+               the selfdup rows), pairs, info, cut_out (gaps a haplotypic copy was cut out at)
   _small       small_calls, attach (unlocs per copy), hap, npx_, start_, sg_arr, soft, tips,
                chain_px, gain_min, attach_link, attach_margin, orient_gain_, mate_of,
                extra_of, arranged, joined, arr_rows, sol, block_idx

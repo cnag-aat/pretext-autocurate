@@ -8,6 +8,7 @@ Contact decays with distance within a chromosome copy; at MQ0 the two copies of 
 also share contact along the homology line (reads of identical sequence map to either copy).
 `toy_blocks` gives the alignment blocks between the haplotypes of the same toy genome.
 """
+import re
 import struct
 
 import numpy as np
@@ -94,7 +95,8 @@ def toy_map(path, scaffolds, chrom_px, npix=512, bp_per_px=10000, homolog=0.35, 
     end px, reversed), ...])], pieces separated by a 1-px gap (in the `gap` track). Contact
     within a copy decays as peak / (1 + d); between the two haplotypes of a chromosome,
     `homolog` times that at the homologous positions (MQ0). `coverage`: {(chromosome, hap):
-    factor} for the `coverage` track (1 = normal). Returns {pixel: (chromosome, hap, pos)}."""
+    factor} or {(chromosome, hap, start px, end px): factor} for the `coverage` track (1 =
+    normal; later keys win). Returns {pixel: (chromosome, hap, pos)}."""
     rng = np.random.default_rng(seed)
     names, lengths, truth = [], [], []
     for name, pieces in scaffolds:
@@ -134,23 +136,29 @@ def toy_map(path, scaffolds, chrom_px, npix=512, bp_per_px=10000, homolog=0.35, 
     m[gap > 0, :] *= 0.2                             # gaps carry few reads
     m[:, gap > 0] *= 0.2
     cov = np.full(npix, 100, dtype=np.int32)
-    for (c_, h_), f in (coverage or {}).items():
-        cov[(ch == c_) & (hp == h_)] = int(100 * f)
+    for key, f in (coverage or {}).items():
+        sel = (ch == key[0]) & (hp == key[1])
+        if len(key) == 4:
+            sel &= (ps >= key[2]) & (ps < key[3])
+        cov[sel] = int(100 * f)
     write_pretext(path, names, lengths, np.clip(m, 0, 255), graphs={"gap": gap, "coverage": cov})
     return {p: px_cell[p] for p in range(npix)}
 
 
 def toy_blocks(scaffolds, bp_per_px=10000, query_hap=2):
-    """Blocks (homology.Block) of every `query_hap` scaffold piece against the pieces of the
-    same chromosome in the other haplotypes, in each scaffold's own bp (a gap pixel between
-    pieces counts, as in `toy_map`): what minimap2 would give for the toy genome."""
+    """Blocks (homology.Block) of every piece of a `query_hap` scaffold against the pieces of
+    the same chromosome in the other haplotype's scaffolds, in each scaffold's own bp (a gap
+    pixel between pieces counts, as in `toy_map`): what minimap2 would give for the toy
+    genome. A scaffold's haplotype is its H1_ / H2_ prefix (else its pieces' own), so an
+    allele of haplotype 1 placed in an H2 scaffold aligns as H2 sequence."""
     pieces = []                       # (scaffold, chromosome, hap, a, b, rev, first cell)
     for name, ps in scaffolds:
         k = 0
         for i, (ch, hap, a, b, rev) in enumerate(ps):
             if i:
                 k += 1                # the gap pixel
-            pieces.append((name, ch, hap, a, b, rev, k))
+            m_ = re.match(r"^H(\d+)_", name)
+            pieces.append((name, ch, int(m_.group(1)) if m_ else hap, a, b, rev, k))
             k += b - a
     cell = lambda p, pos: p[6] + ((p[4] - 1 - pos) if p[5] else (pos - p[3]))
     out = []
