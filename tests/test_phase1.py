@@ -57,13 +57,17 @@ class FakeMap:
 class TestSavestate(unittest.TestCase):
     def test_payload_roundtrip_all_fixtures(self):
         files = glob.glob(os.path.join(FX, "*savestate*"))
+        if not files:
+            self.skipTest("missing fixtures")
         self.assertGreaterEqual(len(files), 5)
         for f in files:
             with self.subTest(f=os.path.basename(f)):
                 self.assertEqual(SaveState.load(f).payload(), raw_payload(f))
 
     def test_save_reload(self):
-        st = SaveState.load(TYL_SS)
+        st = SaveState.blank()                 # the packaged template: runs without fixtures
+        st.edits = [Edit(10, 20, 5, False), Edit(0, 3, 0, True)]
+        st.header_hash = bytes(range(8))       # normally the map's (save(path, map_path))
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "x.savestate")
             st.save(out)
@@ -72,12 +76,14 @@ class TestSavestate(unittest.TestCase):
         self.assertEqual(st2.header_hash, st.header_hash)
 
     def test_edit_count_multiple_of_8_is_read(self):
+        if not os.path.exists(BIRD_SS):
+            self.skipTest("missing fixture")
         st = SaveState.load(BIRD_SS)      # 264 edits: last flag bit lies past the flag array
         self.assertEqual(len(st.edits), 264)
         self.assertFalse(st.edits[-1].invert)
 
     def _template(self, edits, n_wp=0):
-        st = SaveState.load(TYL_SS)
+        st = SaveState.blank()
         st.edits = edits
         st.waypoints = [Waypoint(0.0, 0.0, 30.0, i) for i in range(n_wp)]
         st.scaffs, st.meta_flags = [], []
@@ -126,6 +132,8 @@ class TestHash(unittest.TestCase):
 
     def test_cae71_hashes_recorded(self):
         g = os.path.join(FX, "CAE71_hap_merged_assembly_hic_map_mapq%s.pretext.savestate_%s")
+        if not os.path.exists(g % ("0", "1")):
+            self.skipTest("missing fixture")
         self.assertEqual(SaveState.load(g % ("0", "1")).header_hash.hex(), "3ed8d2ab9a753cec")
         self.assertEqual(SaveState.load(g % ("30", "claude_scaffold1")).header_hash.hex(), "2f42a0604797c6e9")
 

@@ -37,7 +37,7 @@ class Signal:
             for t in range(0, pt.n_tex, max(1, pt.n_tex // 11)):
                 m = self._tex(t, t).astype(np.float32)
                 o = pt.orig_scaffold[t * R:(t + 1) * R]
-                for d in range(D):
+                for d in range(min(D, R)):     # within one texture (small maps: R < max_dist)
                     v = np.diagonal(m, d)[o[:R - d] == o[d:]]
                     tot[d] += v.sum()
                     cnt[d] += len(v)

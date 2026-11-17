@@ -109,6 +109,7 @@ def cmd_haplotigs(a):
 REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
                   "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
                   "graph_keep": "unitig path across the gap: rearrangement there dropped",
+                  "graph_join_candidate": "scaffold ends only the hifiasm graph joins: not made",
                   "sex_boundary": "sex chromosome meets another chromosome, not cut",
                   "unloc_candidate": "chromosome suggested, not moved", "false_duplicate_candidate": "BUSCO duplicate, not moved",
                   "sex_chromosome_candidate": "hemizygous chromosome", "pair_unequal": "possible sex chromosome pair",
@@ -370,7 +371,7 @@ def cmd_run(a):
             res = sexchrom.analyse(pt, blocks, same, level=a.level)
             a.sex_track_files = sexchrom.write_tracks(pt, res, os.path.join(a.out_dir, "tracks")) if res["stretches"] else {}
         tracked = _with_tracks(a, hits)             # once: the tracks do not depend on the level
-        gj, ups = None, None
+        gj, ups, ejoins = None, None, None
         if a.gfa:
             from . import graph
             try:
@@ -380,12 +381,16 @@ def cmd_run(a):
             nl = sum(j.kind == "link" for j, _ in gj)
             print(f"hifiasm graph: {nl} gap(s) between linked contig ends, {len(gj) - nl} filled by a bridging contig",
                   file=sys.stderr)
+            utg = None
             if a.utg_gfa:
                 print(f"reading the unitig graph {a.utg_gfa} ...", file=sys.stderr)
+                utg = graph.UnitigGraph(a.utg_gfa)
                 done = {(j.scaffold, j.gap_start) for j, _ in gj}
-                ups = [u for u in graph.unitig_paths(lay, gr, graph.UnitigGraph(a.utg_gfa))
-                       if (u.scaffold, u.gap_start) not in done]
+                ups = [u for u in graph.unitig_paths(lay, gr, utg) if (u.scaffold, u.gap_start) not in done]
                 print(f"hifiasm unitig graph: {len(ups)} more gap(s) crossed by a unitig path", file=sys.stderr)
+            # joins only the graph sees, between scaffold ends: review rows per level (below)
+            ejoins = graph.end_joins(lay, gr, utg)
+            print(f"hifiasm graph: {len(ejoins)} join(s) between scaffold ends that only the graph sees", file=sys.stderr)
         levels =[float(x) for x in a.sweep.split(",")] if a.sweep else [a.level]
         summary = []
         for lv in levels:
@@ -396,6 +401,8 @@ def cmd_run(a):
                                                 unitig_paths=ups)
             except ValueError as e:
                 sys.exit(f"error: {e}")
+            if ejoins:
+                rows += graph.join_rows(pt, st, lay, ejoins)       # those this layout does not make
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
             os.makedirs(out_dir, exist_ok=True)
             prefix = os.path.join(out_dir, a.prefix)

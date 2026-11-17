@@ -139,7 +139,9 @@ Two haplotypes (`allhaps`):
   contigs of the gap's own haplotype that lie on a unitig path are put into the gap, and,
   with `--fill-gaps`, collapsed homozygous sequence fills the gap (never sequence the
   other haplotype already holds as its own allele). PretextView cannot express these
-  changes, so they are made on the assembly files, each listed with its evidence.
+  changes, so they are made on the assembly files, each listed with its evidence. Joins
+  only the graph sees between scaffold ends (usually a small piece at a chromosome end)
+  are listed for review (`graph_join_candidate`), not made.
 - Flags (does not change): sites where both sides belong together, places where the two
   haplotypes disagree, unloc candidates with one line of evidence, scaffolds with no homolog.
 
@@ -207,8 +209,12 @@ CNAG (https://www.cnag.eu); see [NOTICE](NOTICE).
 
     python3 -m unittest discover -s tests
 
-The tests need the development maps and curated savestates in `seed/fixtures/` (not in the
-repository: large and unpublished); without them most tests are skipped.
+Most tests need the development maps and curated savestates in `seed/fixtures/` (not in
+the repository: large and unpublished) and skip themselves without them. The rest run
+anywhere in about a second, among them `tests/test_synthetic.py`, which writes small
+synthetic `.pretext` maps of a toy genome (`pretext_autocurate/synth.py`: deliberate
+misjoins, two haplotypes) and runs the whole pass and the command line on them. GitHub
+Actions runs those on every push (`.github/workflows/tests.yml`).
 
     python3 tools/score_all.py                   # run every test genome and score it
 

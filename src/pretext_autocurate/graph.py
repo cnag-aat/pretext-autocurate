@@ -664,6 +664,167 @@ def load(gfa, yahs_agp, fasta=None, names=None):
     return out, lay, gr
 
 
+# --------------------------------------------------------------------------- joins at scaffold ends
+
+def outward_ends(layout):
+    """{(contig, orientation)}: leaving the contig that way leaves its YaHS scaffold (the
+    scaffold's two outer ends)."""
+    E = set()
+    for lst in layout.scaffolds.values():
+        first, last = layout.place[lst[0]], layout.place[lst[-1]]
+        E.add((lst[-1], last.orient))
+        E.add((lst[0], FLIP[first.orient]))
+    return E
+
+
+def end_joins(layout, graph, utg=None, limit=1_000_000, min_big=1_000_000, margin=3.0):
+    """Joins only the graph sees: two outer scaffold ends of one haplotype that the contig
+    graph links (the only link at each end), or, with `utg`, that are each other's nearest
+    outer end along the unitig graph with no other within `margin` times the distance. At
+    least one of the two scaffolds must be `min_big` bp or more (the join extends a
+    chromosome). Returns [dict(kind, a, oa, b, ob, dist, overlap, sa, sb, size_a, size_b)]:
+    leaving contig a as oa joins contig b left as ob (both written as exits)."""
+    E = outward_ends(layout)
+    size = {sc: layout.place[lst[-1]].end for sc, lst in layout.scaffolds.items()}
+    hap = lambda c: _hap_of(layout, c)
+    out, seen = [], set()
+
+    def add(kind, a, oa, b, ob, dist, ov):
+        k = frozenset([(a, oa), (b, ob)])
+        sa, sb = layout.place[a].scaffold, layout.place[b].scaffold
+        if k in seen or sa == sb or max(size[sa], size[sb]) < min_big or hap(a) != hap(b):
+            return
+        seen.add(k)
+        out.append(dict(kind=kind, a=a, oa=oa, b=b, ob=ob, dist=dist, overlap=ov, sa=sa, sb=sb,
+                        size_a=size[sa], size_b=size[sb]))
+    for (c, o) in sorted(E):
+        nxt = graph.out.get((c, o), set())
+        if len(nxt) != 1:
+            continue
+        (d, od, ov), = nxt
+        if (d, FLIP[od]) in E and len(graph.into(d, od)) == 1:
+            add("link", c, o, d, FLIP[od], 0, ov)
+    if utg is None:
+        return out
+    import heapq
+    entry = collections.defaultdict(list)
+    for (c, o) in E:
+        n = utg.end_node(graph, c, "t" if o == "+" else "h")
+        if n is not None:
+            ex = n if o == "+" else (n[0], FLIP[n[1]])
+            entry[(ex[0], FLIP[ex[1]])].append((c, FLIP[o]))
+    near = {}
+    for (c, o) in sorted(E):
+        n = utg.end_node(graph, c, "t" if o == "+" else "h")
+        if n is None:
+            continue
+        ex = n if o == "+" else (n[0], FLIP[n[1]])
+        seen_, pq, found = {ex: 0}, [(0, ex)], []
+        while pq and len(found) < 2:
+            dd, x = heapq.heappop(pq)
+            if dd > seen_.get(x, 1e18) or dd > limit:
+                continue
+            for d, od in entry.get(x, ()):
+                if d != c and hap(d) == hap(c) and x != ex and all(f[1] != d for f in found):
+                    found.append((dd, d, od))
+            for m, _ in utg.adj.get(x, ()):
+                nd = dd + utg.length[m[0]]
+                if nd < seen_.get(m, 1e18):
+                    seen_[m] = nd
+                    heapq.heappush(pq, (nd, m))
+        if found:
+            dd, d, od = found[0]
+            second = found[1][0] if len(found) > 1 else None
+            if second is None or second > margin * max(dd, 50000):
+                near[(c, o)] = ((d, FLIP[od]), dd)
+    for (c, o), ((d, od), dd) in near.items():
+        if near.get((d, od), (None,))[0] == (c, o):          # mutual
+            add("path", c, o, d, od, dd, 0)
+    return out
+
+
+def layout_end_joins(pt, state, layout):
+    """The joins between contig ends in the layout a savestate gives (as PretextView would
+    export it): {frozenset({(contig, exit orientation), (contig, exit orientation)})}."""
+    import tempfile
+    from .layout import write_agp
+    fd, tmp = tempfile.mkstemp(suffix=".agp")
+    os.close(fd)
+    try:
+        write_agp(pt, state, tmp)
+        _, objs = read_agp(tmp)
+    finally:
+        os.remove(tmp)
+    tol = 1.5 * pt.bp_per_pix
+    out = set()
+    for rows in objs.values():
+        w = [r for r in rows if r.kind == "W"]
+        for x_, y_ in zip(w, w[1:]):
+            x, y = _snap_end(layout, x_, "right", tol), _snap_end(layout, y_, "left", tol)
+            if x and y:
+                out.add(frozenset([(x[0], x[1]), (y[0], FLIP[y[1]])]))
+    return out
+
+
+def join_rows(pt, state, layout, joins):
+    """Review rows (`graph_join_candidate`) for the graph joins (`end_joins`) the layout of
+    `state` does not make, with the Hi-C end contact of the two scaffold ends against the
+    best other end of a large scaffold for the smaller one, and where the layout put the
+    smaller scaffold."""
+    from . import allhaps
+    from .mapstate import MapState
+    made = layout_end_joins(pt, state, layout)
+    sg = allhaps._signal(pt)
+    g = sg.decay_long(230)
+    idx = {n: i for i, n in enumerate(pt.names)}
+    npx = lambda sc: int(pt.scaffold_npix[idx[sc]]) if sc in idx else 0
+    rng = lambda sc: (int(pt.scaffold_start[idx[sc]]), int(pt.scaffold_start[idx[sc]] + npx(sc) - 1))
+
+    def contact(c, o, d, od):
+        A, B = layout.place[c].scaffold, layout.place[d].scaffold
+        if npx(A) < 2 or npx(B) < 2:
+            return None
+        return allhaps._adjacency(sg, g, rng(A), o != layout.place[c].orient, rng(B), od != layout.place[d].orient)
+    big_ends = [(c, o) for (c, o) in outward_ends(layout) if npx(layout.place[c].scaffold) * pt.bp_per_pix >= 1e6]
+    ms = MapState(pt).replay(state.edits)
+    paint = dict(state.scaffs)
+    painted = {}
+    for i, c in enumerate(ms.contigs):
+        if paint.get(i):
+            painted.setdefault(pt.names[c.scaffold], paint[i])
+    rows = []
+    for j in joins:
+        k = frozenset([(j["a"], j["oa"]), (j["b"], j["ob"])])
+        if k in made:
+            continue
+        big, small = (("a", "b") if j["size_a"] >= j["size_b"] else ("b", "a"))
+        c, o, d, od = j[big], j["o" + big], j[small], j["o" + small]
+        v = contact(c, o, d, FLIP[od])
+        alts = [x for e in big_ends if e[0] not in (c, d)
+                for x in [contact(e[0], e[1], d, FLIP[od])] if x is not None]
+        best = max(alts) if alts else None
+        if v is None:
+            hic = "too small for Hi-C (under 2 px)"
+        else:
+            hic = (f"Hi-C end contact {v:.2f}" + (f", the best of any large scaffold end (next {best:.2f})"
+                                                  if best is None or v > best else
+                                                  f"; another large scaffold end touches it more ({best:.2f})"))
+        what = (f"hifiasm's contig graph links {j['a']}{j['oa']} to {j['b']}{FLIP[j['ob']]} (overlap {j['overlap']:,} bp; "
+                "the only link at both ends)" if j["kind"] == "link" else
+                f"a unitig path of {j['dist'] / 1e3:.0f} kb joins {j['a']}{j['oa']} to {j['b']}{FLIP[j['ob']]}, each the "
+                "other's nearest scaffold end with no close alternative")
+        where = ("; the tool put " + j["s" + small] + " in a chromosome elsewhere" if painted.get(j["s" + small])
+                 and painted.get(j["s" + small]) != painted.get(j["s" + big]) else
+                 "; " + j["s" + small] + " is not placed" if not painted.get(j["s" + small]) else "")
+        rows.append(dict(action="graph_join_candidate", scaffold=j["s" + big], length_mb=round(j["size_" + big] / 1e6, 2),
+                         partner=j["s" + small], strand="", tag="", score=round(v, 2) if v is not None else "",
+                         next_best=round(best, 2) if best is not None else "",
+                         evidence=f"{what}: the end of {j['s' + big]} ({j['size_' + big] / 1e6:.1f} Mb) continues into "
+                                  f"{j['s' + small]} ({j['size_' + small] / 1e6:.2f} Mb), a join no layout makes; "
+                                  f"{hic}{where}; not made (review)"))
+    return rows
+
+
 # --------------------------------------------------------------------------- AGP editing
 
 class AgpRow(NamedTuple):

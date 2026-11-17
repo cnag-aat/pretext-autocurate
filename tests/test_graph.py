@@ -275,6 +275,37 @@ class TestPlaceContig(unittest.TestCase):
         self.assertEqual([G.choose_fill(G.Faidx(fa), lay, gr, ug, u)[:2] for u in ups], [("overlap", 0)] * 2)
 
 
+class TestEndJoins(unittest.TestCase):
+    """Joins only the graph sees, between the outer ends of two scaffolds."""
+
+    def test_link_between_scaffold_ends(self):
+        d = tempfile.mkdtemp()
+        agp = os.path.join(d, "x.hap1.agp")
+        with open(agp, "w") as f:
+            f.write("scaffold_1\t1\t3000\t1\tW\tctgA\t1\t3000\t+\n"
+                    "scaffold_2\t1\t500\t1\tW\tctgB\t1\t500\t-\n"
+                    "scaffold_3\t1\t400\t1\tW\tctgC\t1\t400\t+\n"
+                    "scaffold_3\t401\t600\t2\tN\t200\tscaffold\tyes\tproximity_ligation\n"
+                    "scaffold_3\t601\t900\t3\tW\tctgD\t1\t300\t+\n")
+        gfa = os.path.join(d, "x.hap1.p_ctg.noseq.gfa")
+        with open(gfa, "w") as f:
+            f.write("S\tctgA\t*\tLN:i:3000\nS\tctgB\t*\tLN:i:500\nS\tctgC\t*\tLN:i:400\nS\tctgD\t*\tLN:i:300\n"
+                    # A's end to B (an outer end of scaffold_2): only link at both ends
+                    "L\tctgA\t+\tctgB\t+\t50M\nL\tctgB\t-\tctgA\t-\t50M\n"
+                    # C's end leads into D, but both are inside scaffold_3: not a scaffold-end join
+                    "L\tctgC\t+\tctgD\t+\t40M\nL\tctgD\t-\tctgC\t-\t40M\n")
+        lay = G.Layout([agp])
+        gr = G.Graph([gfa])
+        ends = G.outward_ends(lay)
+        self.assertIn(("ctgA", "+"), ends)
+        self.assertIn(("ctgB", "+"), ends)                   # B is reversed in scaffold_2: + leaves it leftwards
+        self.assertNotIn(("ctgC", "+"), ends)
+        js = G.end_joins(lay, gr, min_big=2000)
+        self.assertEqual([(j["kind"], j["sa"], j["sb"], j["overlap"]) for j in js],
+                         [("link", "H1_scaffold_1", "H1_scaffold_2", 50)])
+        self.assertEqual(G.end_joins(lay, gr, min_big=10000), [])    # neither scaffold large enough
+
+
 @unittest.skipUnless(os.path.isdir(GDIR) and os.path.exists(TRO_FA), "missing fixture")
 class TestTroglobisium(unittest.TestCase):
     def test_links_and_bridges(self):
@@ -296,6 +327,18 @@ class TestTroglobisium(unittest.TestCase):
             # one path only (alternatives searched up to 150 kb longer than the shortest)
             self.assertEqual(sum(u.n_paths == 1 for u in ups), 76)
             self.assertIn(("H1_scaffold_16", 450), {(u.scaffold, round(u.gap_start / 1e3, -1)) for u in ups})
+            # joins only the graph sees, between scaffold ends (HANDOFF 9a): 18; the review rows
+            # leave out those the curator's layout makes
+            ej = G.end_joins(lay, G.Graph(gfa), G.UnitigGraph(utg))
+            self.assertEqual(len(ej), 18)
+            self.assertIn(frozenset(("H1_scaffold_57", "H1_scaffold_156")), {frozenset((j["sa"], j["sb"])) for j in ej})
+            from pretext_autocurate import Pretext, SaveState
+            tro = os.path.join(FIX, "qqTroRaco.hfsm.asm.bp.yhs_mq10.diploid_mq0.extensions.HR.pretext")
+            pt = Pretext(tro)
+            rows = G.join_rows(pt, SaveState.load(tro + ".savestate_final"), lay, ej)
+            self.assertEqual(len(rows), 17)               # the curator made one of them (H2_scaffold_71 / _55)
+            r = next(r for r in rows if r["partner"] == "H1_scaffold_156")
+            self.assertIn("the best of any large scaffold end", r["evidence"])
 
 
 if __name__ == "__main__":

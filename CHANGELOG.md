@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Joins only hifiasm's graph sees, between the outer ends of two scaffolds (a contig link
+  that is the only one at both ends, or mutually nearest ends along the unitig graph),
+  where one scaffold is chromosome-size and the layout does not make the join: review rows
+  `graph_join_candidate` with the Hi-C end contact against the best other end. Not made
+  automatically. Troglobisium: 18, nearly all a small piece at a chromosome end.
+
+- Tests that run without the private fixtures: `pretext_autocurate/synth.py` writes small
+  synthetic `.pretext` maps of a toy genome, `tests/test_synthetic.py` runs the whole pass
+  and the command line on them; GitHub Actions runs these on every push. Fixed on the way:
+  the decay curve crashed on maps with textures under 200 pixels.
+
 - `tools/score_all.py` (with `tools/score_cases.json` and `pretext_autocurate/score.py`):
   runs the tool on every test genome and scores it against the curators' savestates
   (junctions, breaks, chromosome grouping, tags by bp, edits, review items) in one table.

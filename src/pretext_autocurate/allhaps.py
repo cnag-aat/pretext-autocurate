@@ -63,6 +63,11 @@ class Pair:
     note: str
 
 
+def _mean0(v):
+    """Mean of v, 0 when empty (small maps: no pair of pixels at some distance)."""
+    return float(v.mean()) if len(v) else 0.0
+
+
 def _signal(m):
     """One Signal per map, kept on the map object: its decay curve, insulation profiles,
     binned matrix and decoded tiles are reused between steps and between sweep levels."""
@@ -457,7 +462,7 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
     scb = pt.orig_scaffold[np.minimum(np.arange(nb) * f + f // 2, pt.npix - 1)]
     D = 40
     # expected contact at each distance (in bins) within one scaffold: the binned decay curve
-    g = np.array([np.diagonal(M, d)[scb[:nb - d] == scb[d:]].mean() for d in range(D)])
+    g = np.array([_mean0(np.diagonal(M, d)[scb[:nb - d] == scb[d:]]) for d in range(D)])
     gh = sgh.decay_long(400)                   # decay in pixels on the map used for tip inversion
     # 3. telomere strand tracks (telo_scan.py 5p / 3p), when the map has them
     t5, t3 = pt.graphs.get("telomere_5p"), pt.graphs.get("telomere_3p")
@@ -1335,7 +1340,7 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
     scb = raw.orig_scaffold[np.minimum(np.arange(nb) * f + f // 2, raw.npix - 1)]
     D = 40
     # expected contact at each distance (bins) within one scaffold of the original assembly
-    g = np.array([np.diagonal(M, d)[scb[:nb - d] == scb[d:]].mean() for d in range(D)])
+    g = np.array([_mean0(np.diagonal(M, d)[scb[:nb - d] == scb[d:]]) for d in range(D)])
     start, npx = pt.scaffold_start, pt.scaffold_npix
 
     def win(u, tail):

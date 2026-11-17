@@ -4,6 +4,7 @@ seed/fixtures/
 out/
 out_*/
 score_out/
+golden_out/
 work/
 __pycache__/
 *.pyc

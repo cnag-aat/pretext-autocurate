@@ -1,0 +1,27 @@
+# Tests that need no private data: the synthetic maps (tests/test_synthetic.py), the graph,
+# scoring, savestate and simulator tests. The fixture-based tests (seed/fixtures/, not in the
+# repository) skip themselves here; run the full suite locally before a release.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install .
+      - name: Command line
+        run: pretext-autocurate --version
+      - name: Tests
+        run: python -m unittest discover -s tests -v

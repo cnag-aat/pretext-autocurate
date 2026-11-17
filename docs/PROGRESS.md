@@ -1857,3 +1857,53 @@ updated: pieces the curator left unplaced are counted, not failed; Unloc/FalseDu
 pieces may sit between the two copies of a pair. The curator had left them unplaced: possible misses to check, or the rule
 needs tuning. Unloc agreement with the curations stays low (0% / 11%) because those
 curations do not follow the rule.
+
+## 2026-11-16: tests without fixtures, GitHub Actions (HANDOFF 16)
+
+- `pretext_autocurate/synth.py`: `write_pretext` writes a real .pretext (deflated header,
+  BC4 textures with every mip level, `psgh` tracks; the BC4 encoder is the inverse of
+  `decode_bc4`, exact on flat blocks, within 2 on smooth ones); `toy_map` builds the map of
+  a toy genome (scaffolds made of chromosome pieces, gaps between them, contact decaying as
+  1/(1+d) within a copy, the two copies of a chromosome sharing 35% of that along the
+  homology line, as at MQ0). A 512-pixel map is written and read in 0.06 s.
+- `tests/test_synthetic.py` (8 tests, 0.5 s): format round trip; on a toy diploid with A and
+  B misjoined in H1, allhaps cuts the misjoin ("different homologs"), finds the three pairs,
+  writes a savestate that is a permutation with every piece painted and HAP-tagged and each
+  chromosome's copies side by side; the command line writes a savestate bound to the map,
+  the decisions, review, run info and a PretextView-style AGP, also with `--sweep`; single
+  mode cuts the misjoin; `score.compare` runs on the result.
+- Fixture-dependent tests in `test_phase1.py` now skip without fixtures; its savestate quirk
+  tests use the packaged blank template and run everywhere.
+- Without fixtures: 92 tests, 25 run (1.2 s), 67 skip. `.github/workflows/tests.yml` runs them
+  on Python 3.10 and 3.12 after `pip install .` (checks the package data and the console
+  script too).
+- Found on the way: `Signal.decay` assumed textures of at least `max_dist` (200) pixels and
+  crashed on smaller ones; real maps have 1024. Two empty-mean warnings on tiny maps
+  silenced (`allhaps._mean0`).
+
+## 2026-11-17: joins only the graph sees (HANDOFF 9a)
+
+Joins between the outer ends of two YaHS scaffolds (ends no YaHS join uses) that hifiasm's
+graphs support, against the curator's and the tool's layouts (scratchpad `graphjoins.py`;
+Troglobisium, 765 scaffolds, 1530 outer ends).
+
+- Contig-graph links between two outer ends: 54; the curator made 1, the tool 0. Nearly all
+  join scaffolds under 0.5 Mb to each other, and many are ambiguous (two links at one end:
+  a bubble).
+- Mutually nearest outer ends along the unitig graph (within 1 Mb): 144; the curator made 2,
+  the tool 4; again mostly small pieces with each other.
+- Those that extend a chromosome (one side >= 1 Mb) and are unique (a contig link alone at
+  both ends, or no other end within 3x the distance): 18. Hi-C end contact (`_adjacency`
+  on MQ0) against the best other large scaffold end for the small piece: the graph's end
+  is the best for 3 (e.g. H1_scaffold_57 + H1_scaffold_156: 1.89 against 1.39), 6 pieces are
+  under 2 px (no Hi-C), the rest touch another end more (small pieces touch many ends
+  alike). The curator made 1 (H2_scaffold_71 + H2_scaffold_55, which the tool makes too).
+  H2_scaffold_91 (0.66 Mb) is proposed at the ends of both H2_scaffold_27 and H2_scaffold_62:
+  the two halves the curator joined into one chromosome, with small pieces between them.
+
+Done: review rows `graph_join_candidate` (`graph.end_joins`, `graph.join_rows`; run with
+`--gfa` / `--yahs-agp`, unitig paths with `--utg-gfa`), one per join the level's layout does
+not make, with the graph evidence, the Hi-C contact against the best other end, and where the
+smaller scaffold went. Troglobisium at level 0.5: 15 rows (the tool makes 3 of the 18). Not
+acted on: the curator's verdict on some of them should decide whether graph-unique + Hi-C
+best, or graph alone for pieces under 2 px, is enough to join. Scores unchanged.
