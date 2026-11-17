@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Joins only hifiasm's graph sees are made (curator's review of the Troglobisium rows: all
+  should be placed): `allhaps/graphjoin.py` puts the smaller scaffold at the larger one's
+  end as the graph orients it, ahead of what the tool had put there; rows `graph_join`, or
+  `graph_join_candidate` saying why not (under one pixel, the larger side an Unloc or
+  unplaced). Troglobisium: 10 of 15 made.
+- Pairs that are parts of one chromosome (`merge_pairs`) are also merged with weaker end
+  contact (`merge_link_weak`) when their whole-block contact is `merge_block_min` times the
+  trans background in both haplotypes, or when hifiasm's graph joins their ends. The
+  curator found these joins obvious on the map: end contact 0.25-0.5, whole blocks 7-36x,
+  against 3.5x for a false candidate. Troglobisium at level 0.5 against the curation:
+  junction recall 0.57 -> 0.64, chromosome grouping 89% -> 94%. `tools/missed_joins.py`
+  lists a reference curation's joins the tool does not make.
+
 - Two copies of one region in a scaffold (`allhaps/selfdup.py`): from the alignment between
   the haplotypes, review rows `self_duplication` classed by read depth (coverage track) as
   repeat, duplication or haplotypic. Curator's rule: only a haplotypic copy (it and the other

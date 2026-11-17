@@ -131,6 +131,25 @@ class TestSelfDuplication(unittest.TestCase):
         self.assertEqual(cuts, [])
 
 
+class TestGraphJoin(unittest.TestCase):
+    def test_small_piece_placed_by_graph(self):
+        """A join only hifiasm's graph sees (the tail of H1_scaffold_1 to the head of
+        H1_scaffold_9, a 6-px piece with no alignment): the piece goes at that end, oriented
+        as the graph says, instead of being an unloc."""
+        t = Toy([("H1_scaffold_1", [("A", 1, 0, 94, False)]), ("H1_scaffold_9", [("A", 1, 94, 100, False)])]
+                + H2_A + REST, drop_blocks=("H1_scaffold_9",))
+        try:
+            ej = [dict(kind="path", sa="H1_scaffold_1", ea="t", sb="H1_scaffold_9", eb="h", dist=50000, overlap=0,
+                       size_a=94 * BPP, size_b=6 * BPP)]
+            rows, st, _ = t.run(end_joins=ej)
+            self.assertEqual([(r["scaffold"], r["partner"]) for r in rows_of(rows, "graph_join")],
+                             [("H1_scaffold_9", "H1_scaffold_1")])
+            self.assertNotIn("Unloc", [r["tag"] for r in rows if r["scaffold"] == "H1_scaffold_9"])
+            self.assertTrue(whole(t.layout(st), "A1", 100))
+        finally:
+            t.close()
+
+
 class TestPairing(unittest.TestCase):
     def test_pairs(self):
         t = Toy([("H1_scaffold_1", [("A", 1, 0, 100, False)])] + H2_A + REST)

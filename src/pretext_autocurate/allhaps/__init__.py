@@ -26,7 +26,10 @@ Open items are listed in docs/HANDOFF.md.
 Two copies of one region in a scaffold (`selfdup`): review rows; a haplotypic copy (by read
 depth) with a gap between the copies is cut out.
 
-Modules: common, pairing, sites, evidence, selfdup, small, arrange, driver, state.
+Joins only hifiasm's graph sees, between scaffold ends (`graphjoin`): made, and evidence for
+merging pairs.
+
+Modules: common, pairing, sites, evidence, selfdup, graphjoin, small, arrange, driver, state.
 A diagnostic that monkeypatches a step (e.g. `place_small`) must patch it where it is used (`allhaps.driver`), not here.
 """
 from .common import Level, Pair, THRESHOLDS, Thresholds, _mean0, _signal, _level, _union, write_rows  # noqa: F401

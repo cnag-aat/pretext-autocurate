@@ -10,14 +10,14 @@ from .common import Thresholds, _signal, _union
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
-from . import selfdup
+from . import graphjoin, selfdup
 from .small import place_small
 from .state import Run
 
 
 def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
                    small_blocks=None, do_place=True, level=0.5, do_arrange=True, same_hap_blocks=None, sex_system=None,
-                   graph_junctions=None, unitig_paths=None, stop_after=None):
+                   graph_junctions=None, unitig_paths=None, end_joins=None, stop_after=None):
     """allhaps curation: cuts (`telomere_sites`), homolog pairing, small scaffolds
     (`place_small`), merged pairs, order and orientation within each copy (end contact, then
     the other haplotype's alignment), parallel layout, HAP tags, paint, savestate.
@@ -31,6 +31,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     `graph_junctions`: hifiasm graph evidence at YaHS gaps (`graph.load`): those joins are
     right, so never cut, inverted or rearranged there. `unitig_paths`: unitig-graph paths
     across YaHS gaps (`graph.unitig_paths`), weaker evidence (see `_unitig_evidence`).
+    `end_joins`: joins between scaffold ends only the graph sees (`graph.scaffold_end_joins`):
+    made (`graphjoin`), and evidence for merging pairs.
     Returns (rows for the decisions table, savestate, info). `stop_after` (a step name in
     STEPS, for tests) returns the run's state (`state.Run`) after that step instead."""
     raw = pt
@@ -38,7 +40,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     run_ = Run(pt=pt, phasing=phasing, hap_regex=hap_regex, hi=hi, do_cuts=do_cuts, blocks=blocks,
                busco_hits=busco_hits, small_blocks=small_blocks, do_place=do_place, level=level,
                do_arrange=do_arrange, same_hap_blocks=same_hap_blocks, sex_system=sex_system,
-               graph_junctions=graph_junctions, unitig_paths=unitig_paths, raw=raw, th=th)
+               graph_junctions=graph_junctions, unitig_paths=unitig_paths, end_joins=end_joins or [], raw=raw,
+               th=th)
     if stop_after is not None and stop_after not in STEPS:
         raise ValueError(f"stop_after: unknown step {stop_after!r} (steps: {', '.join(STEPS)})")
     for name in STEPS[:-1]:
@@ -49,7 +52,8 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
 
 
 # the steps of curate_allhaps, in order; each reads and sets attributes of the Run (state.py)
-STEPS = ("_setup", "_small", "_merge", "_sex_chain", "_arrange", "_reference", "_follow", "_rows", "_layout")
+STEPS = ("_setup", "_small", "_merge", "_sex_chain", "_arrange", "_reference", "_follow", "_graph_place", "_rows",
+         "_layout")
 
 
 def _setup(run_):
@@ -146,6 +150,7 @@ def _merge(run_):
     """Pairs that are parts of one chromosome merged into one (merge_pairs)."""
     arr_rows, attach, do_arrange, extra_of = run_.arr_rows, run_.attach, run_.do_arrange, run_.extra_of
     hap, npx_, pairs, pt, sg_arr, th = run_.hap, run_.npx_, run_.pairs, run_.pt, run_.sg_arr, run_.th
+    glinks = graphjoin.links(pt, run_.raw, run_.end_joins)
     # Pairs that are parts of one chromosome become one: the smaller pair's two units go into
     # the chains of the larger pair's two copies (same haplotype prefix on each side).
     host_of = {}                                           # merged unit -> host copy
@@ -153,8 +158,9 @@ def _merge(run_):
         size = lambda P: npx_[P.a] + npx_[P.b]
         root = {}
         find = lambda P: find(root[id(P)]) if id(P) in root else P    # union-find on pairs
-        for v, P, Q, x, y in merge_pairs(pt, sg_arr, pairs, hap, link_min=th.merge_link_min,
-                                         specific=th.merge_specific):
+        for v, P, Q, x, y, how in merge_pairs(pt, sg_arr, pairs, hap, link_min=th.merge_link_min,
+                                              specific=th.merge_specific, link_weak=th.merge_link_weak,
+                                              block_min=th.merge_block_min, graph_links=glinks):
             P, Q = find(P), find(Q)
             if P is Q:
                 continue
@@ -172,7 +178,7 @@ def _merge(run_):
                 action="merge", scaffold=pt.names[Q.a], length_mb=round(npx_[Q.a] * pt.bp_per_pix / 1e6, 2),
                 partner=pt.names[Q.b], strand="", tag="", score=round(v, 2), next_best="",
                 evidence=f"this pair and the pair {pt.names[P.a]} / {pt.names[P.b]} are parts of one chromosome: their ends "
-                         f"touch at {v:.2f} of adjacent sequence in both haplotypes (the weaker of the two); "
+                         f"touch at {v:.2f} of adjacent sequence in both haplotypes (the weaker of the two){how}; "
                          "laid out and painted as one chromosome"))
         # unlocs and extra pieces of a merged unit go with its host copy
         for u_, h_ in host_of.items():
@@ -695,6 +701,12 @@ def _follow(run_):
     for u in attach:
         attach[u] = [c for c in attach[u] if c["u"] not in joined]
     run_.arr_rows = arr_rows
+
+
+def _graph_place(run_):
+    """Joins only hifiasm's graph sees, between scaffold ends: the smaller scaffold goes at that
+    end of the larger one's chromosome (`graphjoin.place`)."""
+    run_.arr_rows += graphjoin.place(run_)
 
 
 def _rows(run_):

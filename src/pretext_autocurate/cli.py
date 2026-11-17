@@ -399,11 +399,10 @@ def cmd_run(a):
                 rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
                                                 busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex,
                                                 same_hap_blocks=same, sex_system=a.sex_system, graph_junctions=gj,
-                                                unitig_paths=ups)
+                                                unitig_paths=ups,
+                                                end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
             except ValueError as e:
                 sys.exit(f"error: {e}")
-            if ejoins:
-                rows += graph.join_rows(pt, st, lay, ejoins)       # those this layout does not make
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
             os.makedirs(out_dir, exist_ok=True)
             prefix = os.path.join(out_dir, a.prefix)

@@ -6,7 +6,7 @@ steps set them:
   parameters   pt (the map; replaced by the cut map in _setup), raw (the map as given), th
                (Thresholds at the run's level), hi, blocks, small_blocks, busco_hits,
                phasing, hap_regex, sex_system, same_hap_blocks, graph_junctions,
-               unitig_paths, do_cuts, do_place, do_arrange, level
+               unitig_paths, end_joins, do_cuts, do_place, do_arrange, level
   _setup       sx (sex chromosomes, sexchrom.analyse), sites, cuts, flips, graph_rows (with
                the selfdup rows), pairs, info, cut_out (gaps a haplotypic copy was cut out at)
   _small       small_calls, attach (unlocs per copy), hap, npx_, start_, sg_arr, soft, tips,
@@ -18,6 +18,8 @@ steps set them:
   _reference   pair_of, along, loose, false_dup, conflict_min, contig_min, contig_ratio,
                g230, join_rows
   _follow      arr_rows
+  _graph_place (changes arranged, joined, attach, small_calls in place; adds to arr_rows;
+               graph_placed)
   _rows        rows (decision rows so far), genes, dup_of (BUSCO), npx, start, mb, bpp
   _layout      returns (rows, savestate, info)
 

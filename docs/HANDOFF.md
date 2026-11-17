@@ -23,6 +23,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/pairing.py` | homolog pairing (`pair_homologs`, Hi-C or sequence), `same_prefix_pairs`, `merge_pairs` (pairs that are parts of one chromosome) |
 | `allhaps/sites.py` | `telomere_sites` (cut / invert_tip / keep at gaps), `alignment_breaks` |
 | `allhaps/evidence.py` | hifiasm graph evidence at sites (`_graph_evidence`, `_unitig_evidence`) |
+| `allhaps/graphjoin.py` | joins only hifiasm's graph sees, between scaffold ends: `links` (evidence for `merge_pairs`), `place` (the smaller scaffold put at the larger one's end) |
 | `allhaps/selfdup.py` | two copies of one region in a scaffold: `self_duplications` (repeat / duplication / haplotypic by read depth), `apply_cuts` (a haplotypic copy cut out at the gaps around it), `rows` |
 | `allhaps/small.py` | small scaffolds (`place_small`): unloc, candidate, join, false duplicate |
 | `allhaps/arrange.py` | `arrange_pieces` (order/orientation within a copy), `_project` (the other copy follows the reference), `_contig_conflicts` |
@@ -255,7 +256,16 @@ Evidence
    that lie wholly on a path, and fills only collapsed homozygous sequence (curator: never
    duplicate the other haplotype's allele; collapsed sequence must be duplicated).
    Still open:
-   (a) joins only the graph makes: done 2026-11-17 as review rows (`graph.end_joins`,
+   (a) joins only the graph makes: MADE since 2026-11-17 (curator's review of the 15
+       Troglobisium rows: all should be placed). `allhaps/graphjoin.py`: the smaller scaffold
+       goes at the larger one's end, before whatever the tool had put there, oriented as the
+       graph says, taken from where the tool had it; a small homolog pair goes when both its
+       scaffolds are graph-joined into the two copies of one chromosome; graph links between
+       copy ends (direct, or through one small scaffold) also let `merge_pairs` merge two
+       pairs. Rows `graph_join` (made) or `graph_join_candidate` with why not: under one
+       pixel, the larger side is an Unloc or unplaced (PretextView cannot join Unlocs; the
+       curator would like the tool to), or a cut piece. Troglobisium level 0.5: 10 of the 15
+       made. Earlier note: done 2026-11-17 as review rows (`graph.end_joins`,
        `join_rows`; row `graph_join_candidate`, in the review list): a contig link that is
        the only one at both ends, or mutually nearest scaffold ends along the unitig graph
        with no close alternative, one side >= 1 Mb, not made by the layout; each row gives

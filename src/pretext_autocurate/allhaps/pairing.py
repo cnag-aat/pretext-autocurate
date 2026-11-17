@@ -226,7 +226,8 @@ def same_prefix_pairs(pt, info, small_blocks, min_bp=500000, frac_min=0.5):
     return out
 
 
-def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, specific=3.0, debug=None):
+def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, specific=3.0, debug=None,
+                link_weak=None, block_min=None, graph_links=()):
     """Homolog pairs that are parts of one chromosome: an end of one pair's copy touches an
     end of the other pair's copy at the level of adjacent sequence, and the corresponding
     ends of their two homologs do the same (the join is seen in both haplotypes, which
@@ -238,7 +239,18 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
 
     `min_px`: smallest copy considered (pixels); `link_min`: least end contact (fraction of
     adjacent sequence, the weaker haplotype); `margin`: how far a link must beat any other
-    candidate link at the same ends."""
+    candidate link at the same ends.
+
+    Chromosome-level contact (Troglobisium: joins the curator found obvious had end contact
+    0.25-0.5, while their whole blocks showed 7-36x the trans background, against 3.5x for a
+    false candidate): with `block_min`, the mean contact over the whole block of two copies,
+    over the mean of each copy's blocks with the other copies of its haplotype, must reach
+    `block_min` in both haplotypes for a link that is under `link_min` but at least
+    `link_weak` (still `specific`). `graph_links`: {frozenset({(unit, end), (unit, end)})},
+    copy ends that hifiasm's graph joins (directly or through one small scaffold); a pair of
+    pairs whose ends it joins in either haplotype is merged at those ends when the
+    chromosome-level test passes, whatever the end contact (the graph link is unique).
+    Returns [(score, host pair, member pair, x, y, how)]."""
     M = sg.binned(f)
     nb = M.shape[0]
     raw = getattr(pt, "pt", pt)
@@ -268,6 +280,7 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
         return float(M[a0:a1 + 1, b0:b1 + 1].sum() / max(expect.sum(), 1e-9))
 
     other = {"h": "t", "t": "h"}
+    glinks = set(graph_links)
     main = [p for p in pairs if p.kind == "pair" and min(npx[p.a], npx[p.b]) >= min_px and hap[p.a] != hap[p.b]]
     # ends with a telomere signal in their last 10 px: a chromosome ends there, nothing joins
     tel, telomeric = pt.graphs.get("telomere"), set()
@@ -294,10 +307,14 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
                     # opposite strands); the join must show in both, so the weaker one counts
                     eb = ea if P.same_strand else other[ea]
                     ed = ec if Q.same_strand else other[ec]
-                    v = min(adj(a, ea, c, ec), adj(b, eb, d, ed))
-                    combos.append((v, ea, ec, bool({(a, ea), (c, ec), (b, eb), (d, ed)} & telomeric)))
+                    v1, v2 = adj(a, ea, c, ec), adj(b, eb, d, ed)
+                    gl = frozenset({(a, ea), (c, ec)}) in glinks or frozenset({(b, eb), (d, ed)}) in glinks
+                    combos.append((min(v1, v2), ea, ec, bool({(a, ea), (c, ec), (b, eb), (d, ed)} & telomeric), v1, v2, gl))
             combos.sort(key=lambda x: -x[0])
-            allc.append((combos[0][0], id(P), combos[0][1], id(Q), combos[0][2], P, Q, a, c, combos[0][3], combos[1][0]))
+            best = next((x for x in combos if x[6]), combos[0])          # the ends the graph joins, if any
+            second = next(x[0] for x in combos if x is not best)
+            allc.append((best[0], id(P), best[1], id(Q), best[2], P, Q, a, c, best[3], second, best[4], best[5], best[6],
+                         b, d))
     # what each pair shows with its third-best partner: a piece of a chromosome has at most two
     # neighbours, so anything beyond the second is the level of unspecific contact for that pair
     by_pair = {}
@@ -306,33 +323,66 @@ def merge_pairs(pt, sg, pairs, hap, min_px=60, link_min=0.5, margin=1.2, f=8, sp
         by_pair.setdefault(x[3], []).append(x[0])
     third = {k: (sorted(v, reverse=True)[2] if len(v) > 2 else 0.0) for k, v in by_pair.items()}
     if debug is not None:
-        debug.extend((x[0], x[10], third[x[1]], third[x[3]], x[9], pt.names[x[7]], pt.names[x[8]]) for x in allc)
+        # (weaker contact, second-best end combination, third-best partners, telomeric, the two
+        # units of one haplotype, contact in that haplotype and in the other)
+        debug.extend((x[0], x[10], third[x[1]], third[x[3]], x[9], pt.names[x[7]], pt.names[x[8]], x[11], x[12], x[13])
+                     for x in allc)
+    # chromosome-level contact: whole-block mean of two copies over each one's mean block
+    # with the other copies of its haplotype (its trans background)
+    units = [u for P in main for u in (P.a, P.b)]
+    brng = lambda u: slice(-(-int(start[u]) // f), max(int(start[u] + npx[u]) // f, -(-int(start[u]) // f) + 1))
+    bmean, bg_ = {}, {}
+
+    def block(x, y):
+        k = (min(x, y), max(x, y))
+        if k not in bmean:
+            bmean[k] = float(M[brng(x), brng(y)].mean())
+        return bmean[k]
+
+    def bg(x):
+        if x not in bg_:
+            bg_[x] = max(float(np.mean([block(x, y) for y in units if y != x and hap[y] == hap[x]] or [0.0])), 1e-9)
+        return bg_[x]
+    ratio = lambda x, y: block(x, y) / max(bg(x), bg(y))
     cand = []
     for x in allc:
-        v, ip, ea, iq, ec, P, Q, a, c, at_tel, second = x
+        v, ip, ea, iq, ec, P, Q, a, c, at_tel, second, _, _, gl, b, d = x
         # Adjacent ends: no telomere signal, and far more contact than the pairs show with
         # partners they cannot be next to. Small chromosomes that cluster in the nucleus (bird
         # microchromosomes) touch many others at a similar level.
-        if at_tel or v < specific * max(third[ip], third[iq]):
-            continue
-        cand.append((v, ip, ea, iq, ec, P, Q, a, c))
-    # greedy, strongest first: each pair end joins at most once, no cycles (group: union of
-    # pairs already linked), and a link must beat by `margin` the next candidate at its ends
-    cand.sort(key=lambda x: -x[0])
+        spec = v >= specific * max(third[ip], third[iq])
+        how = None
+        if spec and not at_tel and v >= link_min:
+            how = "end"
+        elif block_min is not None and min(ratio(a, c), ratio(b, d)) >= block_min:
+            if gl:
+                how = "graph"
+            elif spec and not at_tel and link_weak is not None and v >= link_weak:
+                how = "block"
+        if how is None and not (spec and not at_tel):
+            continue                    # (a specific link under the thresholds still counts as a rival)
+        cand.append((v, ip, ea, iq, ec, P, Q, a, c, how, min(ratio(a, c), ratio(b, d)) if how not in (None, "end") else None))
+    # greedy, strongest first (graph links first): each pair end joins at most once, no cycles
+    # (group: union of pairs already linked), and a link must beat by `margin` the next
+    # candidate at its ends (a graph link is unique by itself)
+    cand.sort(key=lambda x: (x[9] != "graph", -x[0]))
     used, group, out = set(), {}, []
-    for k, (v, ip, ea, iq, ec, P, Q, a, c) in enumerate(cand):
-        if v < link_min:
-            break
+    for k, (v, ip, ea, iq, ec, P, Q, a, c, how, br) in enumerate(cand):
+        if how is None:
+            continue
         if (ip, ea) in used or (iq, ec) in used or group.get(ip, ip) == group.get(iq, iq):
             continue
         rival = max([w for w, jp, fa, jq, fc, *_ in cand[k + 1:] if (jp, fa) in ((ip, ea), (iq, ec)) or (jq, fc) in ((ip, ea), (iq, ec))]
                     + [0.0])
-        if rival * margin > v:
+        if how != "graph" and rival * margin > v:
             continue
         used.update(((ip, ea), (iq, ec)))
         ga, gb = group.get(ip, ip), group.get(iq, iq)
         for key in [x for x, gid in group.items() if gid == gb] + [iq]:
             group[key] = ga
         group[ip] = ga
-        out.append((v, P, Q, a, c))
+        text = ("" if how == "end" else
+                f"; whole-block contact {br:.1f}x the trans background in both haplotypes"
+                + ("; hifiasm's graph joins these ends" if how == "graph" else ""))
+        out.append((v, P, Q, a, c, text))
     return out

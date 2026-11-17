@@ -38,6 +38,8 @@ THRESHOLDS = {
     "orient_gain": (0.2, 0.12, 0.05, "least gain for a piece to be turned round"),
     "merge_link_min": (0.7, 0.5, 0.3, "end contact for two pairs to be parts of one chromosome"),
     "merge_specific": (4.0, 3.0, 2.0, "that contact over the pairs' third-best partner"),
+    "merge_link_weak": (0.25, 0.15, 0.1, "weaker end contact accepted with chromosome-level contact (merge_block_min)"),
+    "merge_block_min": (8.0, 5.0, 3.0, "whole-block contact of two copies over their trans background, both haplotypes"),
     "sex_chain_min": (0.08, 0.05, 0.03, "chromosome-level contact chaining a hemizygous piece"),
     "sex_chain_ratio": (4.0, 3.0, 2.0, "that contact over the next chromosome copy"),
     "conflict_min": (0.3, 0.5, 0.8, "end-contact gain that keeps an arrangement against the alignment"),

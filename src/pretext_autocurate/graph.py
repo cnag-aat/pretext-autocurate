@@ -743,6 +743,26 @@ def end_joins(layout, graph, utg=None, limit=1_000_000, min_big=1_000_000, margi
     return out
 
 
+def scaffold_end_joins(layout, joins):
+    """`end_joins` in scaffold terms, for the curation pass: [dict(kind, sa, ea, sb, eb, dist,
+    size_a, size_b)] with ea / eb 'h' (head) or 't' (tail) of scaffolds sa / sb: those two
+    scaffold ends join."""
+    def end(c, o):
+        lst = layout.scaffolds[layout.place[c].scaffold]
+        if c == lst[-1] and o == layout.place[c].orient:
+            return "t"
+        if c == lst[0] and o == FLIP[layout.place[c].orient]:
+            return "h"
+        return None
+    out = []
+    for j in joins:
+        ea, eb = end(j["a"], j["oa"]), end(j["b"], j["ob"])
+        if ea and eb:
+            out.append(dict(kind=j["kind"], sa=j["sa"], ea=ea, sb=j["sb"], eb=eb, dist=j["dist"], overlap=j["overlap"],
+                            size_a=j["size_a"], size_b=j["size_b"]))
+    return out
+
+
 def layout_end_joins(pt, state, layout):
     """The joins between contig ends in the layout a savestate gives (as PretextView would
     export it): {frozenset({(contig, exit orientation), (contig, exit orientation)})}."""
