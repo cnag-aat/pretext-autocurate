@@ -2224,3 +2224,15 @@ mitochondrion only at >= 5x coverage; an organelle of unknown kind never; none t
 chromosome along >= 20% of its length. Result: qqTroRaco 15 tagged (both genomes), 12 flagged
 (`flag_contaminant`; 9 align to chromosomes); icLarUrsu 0 tagged, 22 flagged. The single-linkage
 Hi-C rule alone passed the icLarUrsu repeat: pieces of one collapsed repeat contact each other too.
+
+Peak contact in the Tiara check (2026-11-19). The curator had four of the GC 0.22 pieces as Unlocs
+of H1_scaffold_45. Their contact along it peaks at 150-250 over its first 2 Mb (the map maximum;
+H1_scaffold_45 with its own far quarter 51; between chromosomes median 1.0, max 2.8) and decays
+along it: nuclear sequence at that chromosome start, not a genome of its own. The mean over the whole
+chromosome (33-66) had hidden it. Now the chromosome side is the peak (best 1 Mb window), and a call
+needs its second-best contact with another call >= 2x that; contact among the calls only supports
+them. BLAST of three 5 kb pieces of H1_scaffold_76 against core_nt sat in NCBI's queue for over half
+an hour; the curator expects the sequence is too repetitive for BLAST to say much. qqTroRaco: 5
+tagged (H1_scaffold_85, H2_scaffold_96, H2_scaffold_102, H2_scaffold_130, H1_scaffold_138: the GC 0.35
+genome, 1.76 Mb, peaks 46-118 against partners 219-252), the GC 0.22 group flagged, and the smallest
+GC 0.35 pieces (0.06-0.13 Mb, hot spots 134-223) too. icLarUrsu unchanged (no prokaryote calls).

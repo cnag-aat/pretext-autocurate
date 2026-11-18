@@ -236,7 +236,7 @@ def split_organelles(asm_dir, classes):
 
 
 def confirm(pt, classes, sources, big_bp=10e6, blocks=None, ratio=2.0, mito_cov=5.0, chrom_frac=0.2,
-            max_side=32768, gap=1):
+            max_side=32768, gap=1, window_bp=1e6):
     """Which Tiara calls to act on. Tiara alone also calls nuclear sequence non-eukaryotic: repeat-
     rich pieces prokaryotic (qqTroRaco), a high-copy AT-rich repeat "organelle" and NUMT-like pieces
     "mitochondrion" (icLarUrsu: GC 0.27 at 4-10x, and 0.5-3x; the curated assembly keeps them all).
@@ -246,8 +246,10 @@ def confirm(pt, classes, sources, big_bp=10e6, blocks=None, ratio=2.0, mito_cov=
       - prokaryote or plastid: Hi-C sets it apart. The pieces of one foreign genome contact each
         other, a nuclear piece its chromosome: its second-best contact with another called scaffold
         (per bin pair, bins within `gap` of its own left out; one called neighbour in map order can
-        share contact, a genome's pieces contact several) is >= `ratio` x its best contact with a
-        scaffold over `big_bp` (target sequence, never classified).
+        share contact, a genome's pieces contact several) is >= `ratio` x its peak contact with a
+        scaffold over `big_bp` (target sequence, never classified): the best `window_bp` window along
+        it, not the mean over it, so a piece at a chromosome end or inside one is caught. Contact
+        among the calls only supports them: a group that contacts itself and nothing else is kept.
       - any: with `blocks` (alignments), not aligned to a scaffold over `big_bp` along >=
         `chrom_frac` of its length (then it is nuclear sequence).
     Scaffolds under one pixel cannot be judged by the map.
@@ -255,8 +257,10 @@ def confirm(pt, classes, sources, big_bp=10e6, blocks=None, ratio=2.0, mito_cov=
     Returns (kept {name: class}, unconfirmed [(name, class, partner contact, chromosome contact,
     the reason)]). qqTroRaco (65,536 px, read at 32,768): two foreign genomes (GC 0.22, 2.6 Mb,
     single copy; GC 0.35 against the genome's 0.315, 2.2 Mb, aligned only to each other), second
-    partner 125-255 vs chromosome 11-66; H2_scaffold_100 contacts one called neighbour (197) and no
-    other (0), a chromosome 41."""
+    partner 125-255. The GC 0.22 group peaks at 150-250 on the first 2 Mb of H1_scaffold_45 (the mean
+    over the chromosome is 33-66; between chromosomes ~1): nuclear sequence at that chromosome's start
+    (the curator's Unlocs), not a genome of its own; the GC 0.35 group peaks at 46-74, scattered.
+    H2_scaffold_100 contacts one called neighbour (197) and no other (0)."""
     nan = float("nan")
     test = [n for n in classes if sources.get(n) == "Tiara"]
     if not test:
@@ -291,6 +295,20 @@ def confirm(pt, classes, sources, big_bp=10e6, blocks=None, ratio=2.0, mito_cov=
             return nan
         far = np.abs(ba[:, None] - bb[None, :]) > gap
         return float(M[np.ix_(ba, bb)][far].astype(np.float32).mean()) if far.any() else nan
+    win = max(1, int(round(window_bp / (fct * pt.bp_per_pix))))
+
+    def peak(a, b):
+        """Best `window_bp` window of a's contact along b (bins next to a's own left out)."""
+        ba, bb = bins[a], np.setdiff1d(bins[b], bins[a])
+        if not len(bb):
+            return nan
+        sub = M[np.ix_(ba, bb)].astype(np.float32)
+        sub[np.abs(ba[:, None] - bb[None, :]) <= gap] = np.nan
+        if not np.isfinite(sub).any():
+            return nan
+        prof = np.nan_to_num(np.nanmean(sub, axis=0))
+        w = min(win, len(prof))
+        return float(np.convolve(prof, np.ones(w) / w, mode="valid").max())
     called = [n for n in classes if n in bins]
     kept, unconfirmed = {}, []
     for n, c in classes.items():
@@ -320,7 +338,7 @@ def confirm(pt, classes, sources, big_bp=10e6, blocks=None, ratio=2.0, mito_cov=
             continue
         ps = sorted((x for x in (contact(n, m) for m in called if m != n) if x == x), reverse=True)
         partner = ps[1] if len(ps) > 1 else 0.0
-        chrom, where = max(((x, b) for x, b in ((contact(n, b), b) for b in big) if x == x), default=(0.0, ""))
+        chrom, where = max(((x, b) for x, b in ((peak(n, b), b) for b in big) if x == x), default=(0.0, ""))
         if partner > 0 and partner >= ratio * chrom:
             kept[n] = c
         else:
