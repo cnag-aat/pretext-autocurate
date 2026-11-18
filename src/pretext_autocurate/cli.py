@@ -107,6 +107,7 @@ def cmd_haplotigs(a):
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"rephase": "a copy of a same-haplotype scaffold, moved to the other haplotype (all-vs-all PAF)",
+                  "flag_contaminant": "Tiara calls it non-target, other evidence does not back it: not tagged",
                   "keep": "site flagged, nothing changed","arrangement_differs": "the two haplotypes disagree",
                   "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
                   "graph_keep": "unitig path across the gap: rearrangement there dropped",
@@ -262,6 +263,81 @@ def _with_tracks(a, hits):
     return made
 
 
+def _unplaced(pt, st, classes):
+    """Scaffolds under one pixel for the AGP (layout.unplaced_hap_tags), non-target ones tagged
+    Contaminant and nothing else (no HAP tag): PretextView cannot tag what it does not show."""
+    return [(n, ln, ["Contaminant"] if n in classes else tags) for n, ln, tags in unplaced_hap_tags(pt, st)]
+
+
+def _non_target(a, pt, blocks=None):
+    """Non-target scaffolds from --contaminants and/or --tiara: ({name: class}, {name: source}).
+    Only names in the map are kept; a list name the map lacks is a warning. Tiara calls need other
+    evidence (contam.confirm; `blocks`: alignments, when the run has them)."""
+    from . import contam
+    classes, sources = {}, {}
+    if a.contaminants:
+        got = contam.read_list(a.contaminants)
+        known = set(pt.names)
+        miss = sorted(set(got) - known)
+        if miss:
+            print(f"warning: {len(miss)} name(s) in {a.contaminants} are not in the map (e.g. {miss[0]})", file=sys.stderr)
+        for n, c in got.items():
+            if n in known:
+                classes[n], sources[n] = c, os.path.basename(a.contaminants)
+    if a.tiara:
+        if not a.fasta:
+            sys.exit("error: --tiara needs --fasta")
+        lengths = dict(zip(pt.names, (int(x) for x in pt.scaffold_len_bp())))
+        print(f"non-target: running Tiara on scaffolds up to {a.tiara_max_mb:g} Mb (cached in the work directory)",
+              file=sys.stderr)
+        try:
+            tab = contam.run_tiara(a.fasta, a.work_dir or os.path.join(a.out_dir, "work"), lengths,
+                                   max_mb=a.tiara_max_mb, threads=a.threads, tiara=a.tiara_path)
+        except RuntimeError as e:
+            sys.exit(f"error: {e}")
+        for n, c in contam.read_tiara(tab).items():
+            if n in lengths and n not in classes:
+                classes[n], sources[n] = c, "Tiara"
+        # Tiara alone also calls nuclear sequence non-eukaryotic: each call needs other evidence
+        classes, unconf = contam.confirm(pt, classes, sources, big_bp=a.tiara_max_mb * 1e6, blocks=blocks)
+        a.non_target_flags = unconf
+        if unconf:
+            print(f"non-target: {len(unconf)} Tiara call(s) without other evidence (alignment to a chromosome, "
+                  "coverage, Hi-C): flagged for review, not tagged", file=sys.stderr)
+    if classes:
+        by = collections.Counter(classes.values())
+        print(f"non-target: {len(classes)} scaffolds tagged Contaminant ("
+              + ", ".join(f"{k} {v}" for k, v in by.most_common()) + "); kept out of joins and pairs", file=sys.stderr)
+    a.non_target = (classes, sources)
+    return classes, sources
+
+
+def _tag_non_target(a, pt, st, prefix, rows=None):
+    """Tag the non-target scaffolds in a finished savestate; write <prefix>.contaminants.tsv and,
+    in allhaps, a `contaminant` decision row each."""
+    from . import contam
+    classes, sources = getattr(a, "non_target", ({}, {}))
+    if rows is not None:
+        for n, c, partner, chrom, why in getattr(a, "non_target_flags", []):
+            i = pt.names.index(n)
+            hic = f" (contact {partner:.1f} with the other calls, {chrom:.1f} with that chromosome)" if partner == partner else ""
+            rows.append(dict(action="flag_contaminant", scaffold=n, length_mb=round(pt.scaffold_len_bp()[i] / 1e6, 3),
+                             partner="", strand="", tag="", score="", next_best="",
+                             evidence=f"Tiara: {c}; not tagged: {why}{hic}"))
+    if not classes:
+        return
+    mixed = contam.tag(pt, st, classes)
+    lengths = dict(zip(pt.names, (int(x) for x in pt.scaffold_len_bp())))
+    contam.write_table(classes, sources, lengths, prefix + ".contaminants.tsv")
+    if mixed:
+        print(f"warning: {len(mixed)} non-target piece(s) sit in a painted chromosome; look at them", file=sys.stderr)
+    if rows is not None:
+        for n in sorted(classes, key=lambda n: -lengths[n]):
+            rows.append(dict(action="contaminant", scaffold=n, length_mb=round(lengths[n] / 1e6, 3), partner="",
+                             strand="", tag="Contaminant", score="", next_best="",
+                             evidence=f"non-target: {classes[n]} ({sources[n]})"))
+
+
 def cmd_run(a):
     """`run`: the pre-curation pass. Analyses the first (MQ0) map in single or allhaps mode;
     writes per output directory (one per level with --sweep) decisions.tsv, review.tsv, an AGP,
@@ -297,6 +373,7 @@ def cmd_run(a):
     print(f"mode: {mode}" + (f" (haplotype prefixes {', '.join(prefixes)})" if mode == "allhaps" else ""), file=sys.stderr)
     a.mode = mode
     _load_tracks(a, pt)
+    a.non_target = ({}, {})
     if a.mode == "allhaps":
         from .allhaps import curate_allhaps, write_rows
         blocks = small = None
@@ -329,6 +406,7 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             blocks = read_paf(paf, min_mapq=0)      # pairing uses mapq >= 30; the rest shows repeats
             print(f"sequence homology: {len(blocks)} alignment blocks from {paf}", file=sys.stderr)
+        _non_target(a, pt, blocks)
         hits = None
         if a.busco_table:
             from . import busco
@@ -403,7 +481,7 @@ def cmd_run(a):
                 if a.engine == "adjacency":
                     from .solver import solve
                     rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex, graph_junctions=gj,
-                                           no_yahs=a.no_yahs, fine_px=a.fine_px,
+                                           no_yahs=a.no_yahs, fine_px=a.fine_px, exclude=set(a.non_target[0]),
                                            end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
                     print("adjacency solver: " + ", ".join(f"{k} {v}" for k, v in info.items()), file=sys.stderr)
                 else:
@@ -417,8 +495,9 @@ def cmd_run(a):
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
             os.makedirs(out_dir, exist_ok=True)
             prefix = os.path.join(out_dir, a.prefix)
+            _tag_non_target(a, pt, st, prefix, rows)
             write_rows(rows, prefix + ".decisions.tsv")
-            write_agp(pt, st, prefix + ".agp", unplaced=unplaced_hap_tags(pt, st))
+            write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0]))
             _maybe_asm(a, prefix + ".agp", out_dir, pt.names)
             # One savestate per map, each with that map's hash (it covers the file name).
             for path in [m.path for m in maps] + tracked:
@@ -439,11 +518,13 @@ def cmd_run(a):
                     f.write(f"{lv:.2f}\t{e}\t" + "\t".join(str(n.get(k, 0)) for k in acts) + "\n")
             print(f"sweep summary: {os.path.join(a.out_dir, a.prefix + '.sweep.tsv')}", file=sys.stderr)
         return
+    _non_target(a, pt)
     decisions, st = curate_single(pt, apply_inserts=a.apply_inserts)
     os.makedirs(a.out_dir, exist_ok=True)
     prefix = os.path.join(a.out_dir, a.prefix)
+    _tag_non_target(a, pt, st, prefix)
     write_decisions(decisions, prefix + ".decisions.tsv")
-    write_agp(pt, st, prefix + ".agp", unplaced=unplaced_hap_tags(pt, st))
+    write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0]))
     _maybe_asm(a, prefix + ".agp", a.out_dir, pt.names)
     tracked = _with_tracks(a, None)
     for path in [m.path for m in maps] + tracked:
@@ -455,6 +536,20 @@ def cmd_run(a):
     print(f"edits {len(st.edits)}, painted contigs {len(st.scaffs)}, tags {len(st.meta_flags)}, "
           f"waypoints {len(st.waypoints)}; {nrev} items to review in {prefix}.review.tsv; outputs in {a.out_dir}",
           file=sys.stderr)
+
+
+def _contam_args(p, asm_only=False):
+    """--contaminants for `run` (tag and keep apart) and `asm` (split organelles after pretext-to-asm)."""
+    if asm_only:
+        p.add_argument("--contaminants", help="non-target scaffolds with their class (e.g. run's OUT.contaminants.tsv): "
+                                              "mitochondrion / plastid sequences are moved out of pretext-to-asm's "
+                                              "contaminants file into NAME*.mito.fa / .plastid.fa")
+        return
+    p.add_argument("--contaminants",
+                   help="non-target sequences (contaminants, cobionts, organelles): a text file with a sequence name in "
+                        "the first column (comma, space or tab delimited; an optional second column is the class, e.g. "
+                        "bacteria, mitochondrion, plastid). Tagged Contaminant, never joined, paired or painted; with "
+                        "--pretext-to-asm, organelles are split out of the contaminants FASTA")
 
 
 def _asm_args(p):
@@ -492,6 +587,14 @@ def _maybe_asm(a, agp, out_dir, names):
                   fill_gaps=a.fill_gaps)
     except RuntimeError as e:
         sys.exit(f"error: {e}")
+    _split_organelles(os.path.join(out_dir, "assembly"), getattr(a, "non_target", ({}, {}))[0])
+
+
+def _split_organelles(asm_dir, classes):
+    """Organelles out of pretext-to-asm's contaminants file into their own (contam.split_organelles)."""
+    from . import contam
+    for path, n in contam.split_organelles(asm_dir, classes).items():
+        print(f"{n} organelle sequence(s) moved from the contaminants file to {path}", file=sys.stderr)
 
 
 def cmd_asm(a):
@@ -503,7 +606,8 @@ def cmd_asm(a):
     os.makedirs(a.out_dir, exist_ok=True)
     name = a.asm_name or asm.default_name(a.fasta)
     agp = os.path.join(a.out_dir, name + ".pretext.agp")
-    write_agp(pt, st, agp, unplaced=unplaced_hap_tags(pt, st))
+    from . import contam
+    write_agp(pt, st, agp, unplaced=_unplaced(pt, st, contam.read_list(a.contaminants) if a.contaminants else {}))
     if bool(a.gfa) != bool(a.yahs_agp) or ((a.utg_gfa or a.fill_gaps) and not a.gfa):
         sys.exit("error: --gfa and --yahs-agp go together (the AGPs say where the graph's contigs are), and "
                  "--utg-gfa / --fill-gaps need both")
@@ -514,6 +618,9 @@ def cmd_asm(a):
                   gfa=a.gfa, yahs_agp=a.yahs_agp, names=pt.names, utg_gfa=a.utg_gfa, fill_gaps=a.fill_gaps)
     except RuntimeError as e:
         sys.exit(f"error: {e}")
+    if a.contaminants:
+        from . import contam
+        _split_organelles(a.out_dir, contam.read_list(a.contaminants))
 
 
 def main(argv=None):
@@ -608,6 +715,13 @@ def main(argv=None):
                         "coverage are then tagged: XY/ZW the larger X (Z); X0/Z0 all X (Z); X1X2Y etc. the copy homologous "
                         "to both others Y (W), the others X1, X2 by size. Without it they are tagged HAP1 only")
     p.add_argument("--apply-inserts", action="store_true", help="insert localised pieces instead of only proposing them")
+    _contam_args(p)
+    p.add_argument("--tiara", action="store_true",
+                   help="classify the scaffolds of --fasta with Tiara (eukaryote / prokaryote / organelle); non-eukaryotic "
+                        "ones are tagged Contaminant like --contaminants (class in OUT.contaminants.tsv)")
+    p.add_argument("--tiara-max-mb", type=float, default=10.0,
+                   help="only scaffolds up to this size are classified by Tiara: a chromosome is target sequence [10]")
+    p.add_argument("--tiara-path", help="path to tiara (default: PATH, then conda envs tiara-x86, tiara)")
     _asm_args(p)
     _graph_args(p)
     p.add_argument("--pretext-to-asm", action="store_true",
@@ -618,6 +732,7 @@ def main(argv=None):
                                    "(sanger-tol/agp-tpf-utils)")
     p.add_argument("--map", required=True)
     p.add_argument("--state", required=True, help="the savestate, e.g. the curator's after review")
+    _contam_args(p, asm_only=True)
     p.add_argument("--fasta", required=True, help="the assembly the map was made from (plain or .gz)")
     p.add_argument("--out-dir", default=".")
     _asm_args(p)

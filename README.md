@@ -24,6 +24,16 @@ for on `PATH`, then in a conda environment named `pretext-autocurate`. To build 
 assembly files (`asm`, `run --pretext-to-asm`), also install pretext-to-asm:
 `pip install git+https://github.com/sanger-tol/agp-tpf-utils`.
 
+Tiara (`--tiara`) pins pytorch 1.7, so it goes in an environment of its own, found by name
+(`tiara`, or `tiara-x86`), or give `--tiara-path`:
+
+    conda create -n tiara -c conda-forge -c bioconda tiara
+    # Apple silicon (no arm64 pytorch 1.7): an Intel environment, run under Rosetta;
+    # libcxx 14 because Tiara's llvmlite needs a symbol newer libc++ dropped
+    CONDA_SUBDIR=osx-64 conda create -n tiara-x86 -c pytorch -c conda-forge -c bioconda tiara "libcxx=14"
+
+The biocontainer (`quay.io/biocontainers/tiara`) works too: put a `tiara` wrapper on `PATH`.
+
 ## Quick start
 
 Two haplotypes (scaffolds named `H1_...` / `H2_...`), the recommended way: give the maps
@@ -169,6 +179,8 @@ haplotigs (off-diagonal line plus reduced coverage; borderline ones highlighted)
 | `--gfa GFA --yahs-agp AGP` (each once per haplotype) | hifiasm's contig graph (`*.hap1.p_ctg.gfa`; with or without sequence) and the YaHS AGP that built the scaffolds from those contigs (`H1=path`, or a name containing `hap1`). Where the graph links the two contig ends YaHS put next to each other, the join is right: the gap is never cut (row `graph_link`), and `asm` closes it, dropping the overlap the graph reports after checking it in the sequence. Where the only link out of the left contig and the only one into the right go to one small contig that is a scaffold of its own, that contig fills the gap (row `graph_bridge`); `asm` puts it there and closes both sides. `OUT_DIR/<name>.graph_edits.tsv` lists every change |
 | `--utg-gfa P_UTG.gfa` (with `--gfa`, `--yahs-agp`) | hifiasm's unitig graph (uncompressed; the `noseq` file is enough for `run` and loads fast). A gap whose two contig ends a unitig path joins is not used to rearrange (row `graph_path`; a tip inversion or a cut on contact alone there is dropped, `graph_keep`; a cut the alignment or a telomere backs stands). In `asm`, contigs that overlap along a single path are joined |
 | `--fill-gaps` (`asm`, `run --pretext-to-asm`; needs the unitig GFA with sequence and hifiasm's read depth) | fill gaps from the unitig graph without duplicating what the assembly already has for that haplotype. Every path across the gap is examined: if the contigs overlap or abut along one, the gap is closed; if a path runs through another contig of this haplotype, that contig belongs there: it is put into the gap when it lies wholly on the path and is a scaffold of its own (also at joins the tool or you made; this needs the unitig GFA with sequence but not `--fill-gaps`), and is named in the report otherwise (nothing is copied); otherwise the gap is filled only from a path whose unitigs are at about twice the haploid read depth (collapsed homozygous sequence: two copies in the genome, one in the assembly, in the other haplotype). Haploid paths (the other haplotype's allele), repeats and gaps next to a circular contig (a tandem repeat unit) are not filled. Every decision is in `<name>.graph_edits.tsv`; the fills are in `OUT_DIR/<name>.gapfills.fa` (named `gapfill_N` in the output AGPs) |
+| `--contaminants FILE` | non-target sequences (contaminants, cobionts, organelles): a text file with a sequence name in the first column (comma, space or tab delimited; an optional second column is the class, e.g. `bacteria`, `mitochondrion`, `plastid`). They are tagged `Contaminant` and nothing else, no `HAP1`/`HAP2` (also when under one pixel, in the tool's AGP), never joined, cut, paired, painted or placed as unlocs. `OUT.contaminants.tsv` lists them with their class |
+| `--tiara` (with `--fasta`) | classifies the scaffolds up to `--tiara-max-mb` (default 10) with [Tiara](https://github.com/ibe-uw/tiara) and treats non-eukaryotic ones like `--contaminants`. Tiara alone also calls nuclear sequence non-eukaryotic (repeat-rich pieces "prokaryote", a high-copy AT-rich repeat "organelle", NUMT-like pieces "mitochondrion"), so each call needs other evidence: a prokaryote (or plastid) call counts only if Hi-C sets it apart (its second-best contact with another called scaffold at least twice its contact with any chromosome: the pieces of one foreign genome contact each other); a mitochondrion call only at organelle copy number (coverage ≥ 5× haploid); an organelle of unknown kind never; and no call that aligns to a chromosome along ≥ 20% of its length. Calls without that evidence are rows `flag_contaminant` for review, not tagged. About 3–4 min for the small scaffolds of a 3–4 Gb assembly (cached in `--work-dir`) |
 | `--hap-regex` | how to read the haplotype from a scaffold name (default `^(H\d+)_`) |
 
 Run `pretext-autocurate run --help` for every option.

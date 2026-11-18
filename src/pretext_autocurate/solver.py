@@ -579,9 +579,11 @@ def copies_track(pt, blocks):
 
 def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=None, end_joins=None,
           unloc_ratio=2.0, chrom_min_px=20, repeat_cov=1.5, trace=None, no_yahs=False, fine_px=0,
-          unpaired_cov=(0.6, 1.5)):
+          unpaired_cov=(0.6, 1.5), exclude=()):
     """The adjacency solver (module docstring). Returns (rows, savestate, info). `fine_px` > 0:
-    contigs under two bins are scored at full resolution down to that many pixels, not merged."""
+    contigs under two bins are scored at full resolution down to that many pixels, not merged.
+    `exclude`: names of non-target scaffolds (contam): never joined to anything new, never cut,
+    paired or painted (the caller tags them Contaminant)."""
     bpp = pt.bp_per_pix
     f = 8
     while pt.tex_res % f:
@@ -698,6 +700,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
     rep = {v.i: (float(np.median(covr[v.a:v.b + 1])) if covr is not None else 1.0) for v in nodes}
     olen = pt.scaffold_npix * bpp
     yahs_q = {frozenset(((u, "t"), (v, "h"))): q for u, v, q in yahs}
+    foreign = {v.i for v in nodes if pt.names[v.s] in set(exclude)}      # non-target sequence
 
     def score_edge(x, y):
         """Score of joining ends x and y: dict(x, y, q, parts, total, r, veto); q is the YaHS
@@ -726,6 +729,8 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         total = sum(parts.values())
         if is_yahs and (x[0], y[0]) in fixed or (is_yahs and (y[0], x[0]) in fixed):
             total, parts["graph_link"] = math.inf, math.inf
+        elif is_yahs and x[0] in foreign and y[0] in foreign:
+            total, parts["non_target"] = math.inf, math.inf       # a contaminant scaffold as assembled
         elif (is_yahs and not no_yahs and x[0] in rep_node and y[0] in rep_node
               and "out" not in (tel.get(x), tel.get(y))):
             # inside repetitive shrapnel neither contact nor the curator can decide: as assembled;
@@ -736,7 +741,9 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         # collapsed repeat (MQ0 multimapping reads contact everything)
         veto = ""
         sx, sy = nodes[x[0]].s, nodes[y[0]].s
-        if (not is_yahs or no_yahs) and sx != sy and frozenset((sx, sy)) in copies_of:
+        if (x[0] in foreign) != (y[0] in foreign) or (not is_yahs and x[0] in foreign):
+            veto = "non-target sequence (contaminant list or Tiara)"
+        elif (not is_yahs or no_yahs) and sx != sy and frozenset((sx, sy)) in copies_of:
             # the two are copies of one region in one haplotype (all-vs-all): never one chromosome
             # (bAegFun H1_scaffold_33 + H1_scaffold_36's copy H1_scaffold_44)
             veto = "two copies of one region in one haplotype"
@@ -830,7 +837,8 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
             taken.append(score_edge(x, y))
             used[x], used[y] = y, x
     plen = lambda p: sum(nodes[u].n for u, _ in p)
-    big = [p for p in paths if plen(p) >= chrom_min_px and any(nodes[u].hic for u, _ in p)]
+    big = [p for p in paths if plen(p) >= chrom_min_px and any(nodes[u].hic for u, _ in p)
+           and not any(u in foreign for u, _ in p)]
     small = [p for p in paths if p not in big]
     # pair the big paths of the two haplotypes by aligned bp
     pid = {}
@@ -921,7 +929,9 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
             if k in mate and nodes[big[mate[k]][0][0]].hap == hp:
                 al_own[mate[k]] += bp
         target, why = None, ""
-        if ranked and (len(ranked) == 1 or ranked[0][1] >= unloc_ratio * max(ranked[1][1], 1e-9)):
+        if any(u in foreign for u, _ in p):
+            why = "non-target sequence (contaminant list or Tiara): left apart"
+        elif ranked and (len(ranked) == 1 or ranked[0][1] >= unloc_ratio * max(ranked[1][1], 1e-9)):
             target = ranked[0][0]
             why = (f"contact {ranked[0][1]:.2f} per bin with that chromosome, "
                    f"{ranked[0][1] / max(ranked[1][1], 1e-9) if len(ranked) > 1 else float('inf'):.1f}x the next")
@@ -986,13 +996,19 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
     for v in nodes:
         node_of[v.a:v.b + 1] = v.i
     unloc_nodes = {u for ps in unloc.values() for p in ps for u, _ in p}
+    # every contig without a pair's tag gets its haplotype's (H1_ -> HAP1, H2_ -> HAP2, as the rules
+    # engine does), after re-phasing: pretext-to-asm would otherwise go by the name, and put a
+    # re-phased scaffold back (non-target sequence: Contaminant only, set by the caller)
+    haps = sorted({v.hap for v in nodes if v.hap})
+    hap_tag = lambda h: f"HAP{haps.index(h) + 1}" if h in haps and haps.index(h) < 2 else ""
     for i, c in enumerate(ms.contigs):
         u = int(node_of[ms.pix[c.start]])
         if u in paint:
             st.scaffs.append((i, paint[u]))
         mask = 0
-        if tag.get(u):
-            mask |= 1 << st.tag_id(tag[u])
+        t = tag.get(u) or (hap_tag(nodes[u].hap) if u not in foreign else "")
+        if t:
+            mask |= 1 << st.tag_id(t)
         if u in unloc_nodes and u in paint:
             mask |= 1 << st.tag_id("Unloc")
         if mask:

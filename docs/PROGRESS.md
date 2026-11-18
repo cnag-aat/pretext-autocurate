@@ -2168,3 +2168,59 @@ at MAPQ >= 30; 9.5 Mb aligned within itself), so the 2x pairing rule leaves all 
 H1_scaffold_40 and H2_scaffold_37 are likely two H2 pieces of one chromosome. Next: pair one path
 with several, and join pieces of one haplotype that tile one homolog. Review copies:
 work/review/bAegFun_v3.
+
+All-vs-all on the other genomes (2026-11-18/19). Whole-sequence all-vs-all (`--no-chunk`, `-D`)
+passed the 16 GB cap on qqTroRaco and icLarUrsu within 6 min. With 10 Mb chunks and
+`--drop-self` (each chunk's alignment to its own place dropped after the fact): qqTroRaco 31 min,
+9.3 GB; icLarUrsu 58 min, 11 GB. But a chunk's best hit is then itself, so the other haplotype's
+copy is a secondary, and minimap2 gives secondaries MAPQ 0: the first qqTroRaco run had no pair at
+all (HAP1 agreement 0%). align_chunked.py now works MAPQ out again without the self hits, from the
+chain scores as minimap2 does (`--requalify` for an existing file). After it: qqTroRaco 3.9 Gb
+across the haplotypes at MAPQ >= 30 (both directions; the H2-vs-H1 file 2.1 Gb in one);
+icLarUrsu only 1.95 Gb (both directions) against 1.6 Gb in its H2-vs-H1 file: on this repeat-rich
+genome `-p 0.5` against the chunk's own score drops many of the other haplotype's copies.
+
+Level 0.5, adjacency engine:
+- qqTroRaco all-vs-all: junctions 27/34 / 28/53, breaks 66% / 63%, HAP1 agree 78%, review 12 (H2-vs-H1,
+  earlier code: 27/35 / 27/53, 66% / 63%, 76%, 11). Rephased 2 (H2_scaffold_72, H2_scaffold_172).
+- icLarUrsu: H2-vs-H1 with the current code as before (right 11, wrong order 4, split 33, missed
+  joins 53); all-vs-all fewer joins (13 vs 28): right 3, wrong order 0, split 34, missed joins 64.
+  The weaker cross-haplotype signal costs homology-backed joins. Next: across-haplotype blocks from
+  the H2-vs-H1 file with the all-vs-all for within-haplotype and self blocks, or realign this one
+  whole-sequence on a larger machine.
+- bAegFun all-vs-all, current code: the same junctions and breaks (1/5 / 1/7, 67% / 67%); HAP1
+  agreement 30% -> 40% (curator), 66% -> 76% (corrections), because unplaced shrapnel is now tagged
+  by its haplotype (below).
+
+Haplotype tags on shrapnel (solver). The solver tagged only painted paths; pretext-to-asm reads an
+untagged H1_scaffold_N as haplotype "H1", which is not "HAP1" (it compares names ignoring case only:
+h1 vs hap1), so unplaced pieces would form separate H1 / H2 assemblies, and a re-phased scaffold
+would go back by its name. Now every contig without a pair's tag gets its haplotype's HAP tag after
+re-phasing, as the rules engine does.
+
+Non-target sequence: `--contaminants FILE` and `--tiara` (contam.py). A list (name in the first
+column; comma, space or tab; optional class column) or Tiara's calls on the scaffolds up to
+`--tiara-max-mb` (10). They are tagged Contaminant and nothing else (no HAP tag, no paint; sub-pixel
+ones in the tool's AGP too), never joined, cut, paired, placed as unlocs (solver `exclude`);
+`OUT.contaminants.tsv` keeps the class, and after pretext-to-asm the organelles are moved out of its
+contaminants FASTA into `*.mito.fa` / `*.plastid.fa` (also `asm --contaminants`). PretextView has no
+organelle tag, and pretext-to-asm reads an unknown tag as a haplotype name.
+Tiara (bioconda; on Apple silicon an Intel env, pytorch 1.7, libcxx 14) alone calls nuclear
+sequence non-eukaryotic, so a call needs other evidence (`contam.confirm`):
+- qqTroRaco: 29 calls. Two real foreign genomes: GC 0.22, 2.6 Mb, single copy (H1_scaffold_76,
+  H2_scaffold_92, H1_scaffold_91, H1_scaffold_101, H2_scaffold_152), and GC 0.35 (genome 0.315),
+  2.2 Mb, aligned only to each other (H1_scaffold_85 ~ H2_scaffold_96 ...). Their pieces contact
+  each other at 105-255 per bin pair, any chromosome at 2-66. The curator had four of the first
+  as Unlocs of H1_scaffold_45 / H2_scaffold_42 (their strongest chromosome contact, ~1/4 of the
+  contact within the group): to review. False calls align to chromosomes (H2_scaffold_100 413 kb
+  on H1_scaffold_3) and contact them.
+- icLarUrsu: no bacteria; 22 organelle calls: 11 "organelle, unknown" at GC 0.27 and 4-10x (a
+  high-copy AT-rich repeat), 7 "mitochondrion" at 0.5-3x (NUMT-like), 4 "plastid"; the curated
+  icLarUrsu1.2 keeps all but the 4 smallest as unplaced scaffolds. bAegFun: one 55 kb
+  mitochondrion (H2_scaffold_97).
+Rules: prokaryote / plastid only if its second-best contact with another call (bins next to its
+own left out: one neighbour in map order shares contact) is >= 2x its best chromosome contact; a
+mitochondrion only at >= 5x coverage; an organelle of unknown kind never; none that aligns to a
+chromosome along >= 20% of its length. Result: qqTroRaco 15 tagged (both genomes), 12 flagged
+(`flag_contaminant`; 9 align to chromosomes); icLarUrsu 0 tagged, 22 flagged. The single-linkage
+Hi-C rule alone passed the icLarUrsu repeat: pieces of one collapsed repeat contact each other too.
