@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pretext_autocurate import MapState, Pretext                 # noqa: E402
-from pretext_autocurate.solver import _homology, contigs, solve   # noqa: E402
+from pretext_autocurate.solver import HOM_ACROSS, _homology, contigs, solve   # noqa: E402
 from pretext_autocurate.synth import toy_blocks, toy_map          # noqa: E402
 from test_synthetic import CHROMS, DIPLOID                        # noqa: E402
 
@@ -72,13 +72,17 @@ class TestSolver(unittest.TestCase):
         self.assertEqual(cuts, sorted(cuts))               # never fewer cuts at a higher level
 
     def test_homology(self):
+        # landing: (scaffold, position, direction out, contig, bp of that contig beyond it)
         olen = np.array([10_000_000, 10_000_000])
-        self.assertEqual(_homology((0, 5_000_000, 1), (0, 5_200_000, -1), olen), 1.0)      # facing, near
-        self.assertEqual(_homology((0, 5_000_000, 1), (0, 5_200_000, 1), olen), -1.0)      # same way
-        self.assertEqual(_homology((0, 1_000_000, 1), (0, 9_000_000, -1), olen), -1.0)     # far apart
-        self.assertEqual(_homology((0, 2_000_000, 1), (1, 0, -1), olen), -1.0)             # room on 0
-        self.assertIsNone(_homology((0, 9_900_000, 1), (1, 100_000, -1), olen))           # both at ends
-        self.assertIsNone(_homology(None, (1, 0, -1), olen))
+        L = lambda s, p, d, c=0, room=0.0: (s, p, d, c, room)
+        self.assertEqual(_homology(L(0, 5_000_000, 1), L(0, 5_200_000, -1)), 1.0)            # facing, one contig
+        self.assertEqual(_homology(L(0, 5_000_000, 1), L(0, 5_200_000, 1)), -1.0)            # same way
+        self.assertEqual(_homology(L(0, 1_000_000, 1), L(0, 9_000_000, -1)), -1.0)           # far apart
+        self.assertEqual(_homology(L(0, 5_000_000, 1), L(0, 5_200_000, -1, 1)), HOM_ACROSS)  # across a YaHS join
+        self.assertEqual(_homology(L(0, 2_000_000, 1, 0, 8e6), L(1, 0, -1), olen), -1.0)     # its contig goes on
+        self.assertEqual(_homology(L(0, 2_000_000, 1), L(1, 0, -1), olen), -HOM_ACROSS)      # its scaffold goes on
+        self.assertIsNone(_homology(L(0, 9_900_000, 1), L(1, 100_000, -1), olen))            # both at ends
+        self.assertIsNone(_homology(None, L(1, 0, -1), olen))
 
 
 if __name__ == "__main__":

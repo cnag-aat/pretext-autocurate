@@ -39,6 +39,11 @@ LEVELS = {"prior": (2.5, 1.5, 0.75), "join_min": (3.0, 2.0, 1.2), "specific_min"
 # R_REF: contact ratio halfway (in log) between background (~0.06 on the toy and real maps) and
 # adjacent sequence (~1), so a misjoin and a true join score about -3 and +3 with W_HIC
 W_HIC, W_SPEC, W_HOM, W_GRAPH, W_TEL, R_REF = 1.5, 1.5, 2.0, 3.0, 1.0, 0.25
+# a telomere facing outwards at an end (strand tracks): that end is a chromosome end
+W_TEL_OUT = 2.5
+# homology through two contigs of the other haplotype that YaHS joined is only as good as that
+# join (the other haplotype was scaffolded with the same Hi-C and can share a misjoin)
+HOM_ACROSS = 0.25
 
 
 def _at(name, level):
@@ -198,6 +203,16 @@ def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
             return None
         k = bisect.bisect_right([v.a for v in lst], int(pt.scaffold_start[s] + bp // bpp)) - 1
         return lst[max(k, 0)]
+    olen_bp = lambda s: int(pt.scaffold_npix[s]) * bpp
+
+    def landing(O, p, d):
+        """(scaffold, position, direction out, contig index, bp of that contig beyond p)."""
+        w = node_at(O, min(max(p, 0), olen_bp(O) - 1))
+        if w is None:
+            return (O, p, d, -1, 0.0)
+        a0 = int(pt.scaffold_start[O])
+        lo, hi = (w.a - a0) * bpp, (w.b + 1 - a0) * bpp
+        return (O, p, d, w.i, max(0.0, (hi - p) if d > 0 else (p - lo)))
     proj, share = {}, collections.defaultdict(lambda: collections.defaultdict(float))
     for v in nodes:
         lo = (v.a - int(pt.scaffold_start[v.s])) * bpp
@@ -224,21 +239,32 @@ def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
         span = min(end_bp, (hi - lo) / 2)
         head = [m for m in mo if m[0] < lo + span]
         tail = [m for m in mo if m[1] > hi - span]
+        # the largest block near each end, not the outermost: near a chromosome end the outermost
+        # is often a short subtelomeric repeat that also matches another chromosome's end
+        # (bAegFun H1_scaffold_1 134.6 Mb: chromosome B's start landed on the end of A's homolog);
+        # its projection is carried on to the node's end
         if head:
-            a, b, _, o0, o1, same = min(head, key=lambda m: m[0])
-            # walking out through the head goes down the node: down O if same strand
-            proj[(v.i, "h")] = (O, o0 if same else o1, -1 if same else 1)
+            a, b, _, o0, o1, same = max(head, key=lambda m: m[1] - m[0])
+            d = -1 if same else 1          # walking out through the head goes down O if same strand
+            p = (o0 if same else o1) + d * (a - lo)
+            proj[(v.i, "h")] = landing(O, p, d)
         if tail:
-            a, b, _, o0, o1, same = max(tail, key=lambda m: m[1])
-            proj[(v.i, "t")] = (O, o1 if same else o0, 1 if same else -1)
+            a, b, _, o0, o1, same = max(tail, key=lambda m: m[1] - m[0])
+            d = 1 if same else -1
+            p = (o1 if same else o0) + d * (hi - b)
+            proj[(v.i, "t")] = landing(O, p, d)
     return proj, share
 
 
 def _homology(p, q, olen=None, near=1_000_000, far=5_000_000, slack=500_000):
-    """+1 .. 0 if ends p and q land next to each other on the other haplotype facing each other;
-    -1 if they land on it far apart or facing the wrong way, or on different scaffolds while one
-    of them lands well inside its scaffold (its neighbour there is then known, and it is not the
-    other end); None if it cannot say. `olen`: bp of each scaffold, by index."""
+    """What the other haplotype says about joining ends p and q, from where they land on it
+    (scaffold, position, direction out, contig, contig bp beyond it): +1 .. 0 if next to each
+    other and facing; -1 if far apart, facing the wrong way, or on different scaffolds while one
+    lands well inside its scaffold (its neighbour there is known, and it is not the other end);
+    None if it cannot say. Evidence that rests on the other haplotype's contigs counts fully;
+    evidence that rests on its YaHS joins (two different contigs, or room only beyond a contig's
+    end) counts HOM_ACROSS: that haplotype was scaffolded with the same Hi-C and can share the
+    misjoin (bAegFun H1_scaffold_1 / H2_scaffold_1 at 134.6 Mb). `olen`: bp per scaffold."""
     if p is None or q is None:
         return None
     if p[0] != q[0]:
@@ -247,24 +273,47 @@ def _homology(p, q, olen=None, near=1_000_000, far=5_000_000, slack=500_000):
 
         def room(e):                      # sequence of the other haplotype beyond where e lands
             return olen[e[0]] - e[1] if e[2] > 0 else e[1]
-        return -1.0 if max(room(p), room(q)) > far else None
+        if max(p[4], q[4]) > far:
+            return -1.0                   # its own contig continues there
+        return -HOM_ACROSS if max(room(p), room(q)) > far else None
+    w = 1.0 if p[3] == q[3] and p[3] >= 0 else HOM_ACROSS
     d = (q[1] - p[1]) * p[2]
     if q[2] != -p[2] or d < -slack:
-        return -1.0
+        return -w
     if d <= near:
-        return 1.0
+        return w
     if d <= far:
-        return 1.0 - (d - near) / (far - near)
-    return -1.0
+        return w * (1.0 - (d - near) / (far - near))
+    return -w
 
 
-def _telomeric(pt, v, end, n=3):
+def telomere_ends(pt, nodes, n=3):
+    """Per end: 'out' when a telomere at that end faces outwards (telomere strand tracks: a
+    chromosome's left end reads the motif reversed, `telomere_5p`; its right end forward,
+    `telomere_3p`): that end is a chromosome end. Without strand tracks, 'any' for telomere
+    signal at the end (which way it faces unknown). A pixel spans tens of kb, so each end's window
+    includes the pixel across the gap (as `sites.strand_at`)."""
+    t5, t3 = pt.graphs.get("telomere_5p"), pt.graphs.get("telomere_3p")
+    out = {}
+    if t5 is not None and t3 is not None:
+        from .tracks import telomere_threshold
+        thr = telomere_threshold(t5 + t3)
+        for v in nodes:
+            if float(t5[max(0, v.a - 1):v.a + n].max()) >= thr:
+                out[(v.i, "h")] = "out"
+            if float(t3[max(0, v.b - n + 1):v.b + 2].max()) >= thr:
+                out[(v.i, "t")] = "out"
+        return out
     tel = pt.graphs.get("telomere")
     if tel is None:
-        return False
+        return out
     thr = max(50.0, 5 * float(np.percentile(tel, 99)))
-    seg = tel[v.a:v.a + n] if end == "h" else tel[v.b - n + 1:v.b + 1]
-    return bool(len(seg) and seg.max() >= thr)
+    for v in nodes:
+        if float(tel[v.a:v.a + n].max()) >= thr:
+            out[(v.i, "h")] = "any"
+        if float(tel[max(0, v.b - n + 1):v.b + 1].max()) >= thr:
+            out[(v.i, "t")] = "any"
+    return out
 
 
 def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=None, end_joins=None,
@@ -344,7 +393,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         if np.isfinite(row).any():
             return float(np.nanmax(row))
         return float("nan")
-    tel = {x: _telomeric(pt, nodes[x[0]], x[1]) for x in ends}
+    tel = telomere_ends(pt, nodes)
     spec_min = math.log2(_at("specific_min", level))
     covr = _signal(pt).coverage_ratio()
     rep = {v.i: (float(np.median(covr[v.a:v.b + 1])) if covr is not None else 1.0) for v in nodes}
@@ -367,7 +416,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
             parts["homology"] = W_HOM * h
         if key in graph_edges:
             parts["graph"] = W_GRAPH
-        t = -W_TEL * (tel[x] + tel[y])
+        t = -sum(W_TEL_OUT if tel.get(z) == "out" else W_TEL if tel.get(z) == "any" else 0.0 for z in (x, y))
         if t:
             parts["telomere"] = t
         total = sum(parts.values())
@@ -583,7 +632,8 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         why = (("no gap here (inside a contig): contact drops to background; " if q in sharp else "gap inside the scaffold; ")
                + f"join not kept: score {e['total']:.2f} ({fmt(e['parts'])})"
                + ("".join(f"; {name(x[0])} {x[1]} joined to {name(y[0])} {y[1]} instead" for x, y in rival)
-                  if rival else "; below 0"))
+                  if rival else "; below 0" if e["total"] <= 0 else
+                  "; it would close a loop: the two pieces are already in one path through other joins"))
         rows.append(dict(action="cut", scaffold=pt.names[nodes[u].s], length_mb=round(pos, 2), partner="", strand="",
                          tag="", score=round(e["total"], 2), next_best="", evidence=why))
     for e in taken:

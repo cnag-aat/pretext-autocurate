@@ -1990,3 +1990,26 @@ small-against-all alignment and BUSCO for small scaffolds, alignment breaks at g
 other haplotype's own scaffolding errors make homology near-circular: it backs H1_scaffold_9
 4.39 Mb, a curated misjoin, because H2_scaffold_4 has one too), pairing without alignment,
 false duplicates, sex chromosomes, HAP choice by quality.
+
+Second round (same day). The high-MQ map was measured first and left out: at the bird's YaHS
+gaps MQ10 contact across the junction is 0.00-0.44 at the five curator misjoins and 0.00 at
+eight joins the curator kept (reads near gaps rarely map uniquely), so it does not separate
+them; the rules pass's bird cuts rest on telomere strands, alignment breaks and different
+homologs, not contact. Added instead:
+- telomere strand: an end whose telomere faces outwards (`telomere_5p` at a head, `_3p` at a
+  tail, the pixel across the gap included) is a chromosome end, -2.5 per end (two ends facing
+  the gap: -5); without strand tracks the old unstranded -1 per end.
+- contig-aware homology: support or contradiction counts fully only when it rests on the other
+  haplotype's contigs (both ends land on one contig; or the contig an end lands on goes on),
+  and 0.25 when it rests on that haplotype's YaHS joins, which can share the misjoin.
+- ends project through the largest alignment block near the end, carried on to the end (the
+  outermost was often a subtelomeric repeat matching another chromosome's end: bAegFun
+  H1_scaffold_1's chromosome B start landed on the end of A's homolog).
+
+| level 0.5 | rules | adjacency v1 | adjacency now |
+|---|---|---|---|
+| bAegFun breaks P / R | 75% / 67% | 100% / 11% | 100% / 67% |
+| bAegFun junctions | 3/6 / 2/7 | 0/4 / 1/7 | 2/5 / 2/7 |
+| qqTroRaco breaks P / R | 86% / 68% | 78% / 39% | 85% / 47% |
+| qqTroRaco junctions | 30/43 / 34/53 | 15/20 / 24/53 | 15/19 / 24/53 |
+| icLarUrsu right / wrong order / missed | 16 / 6 / 58 | 10 / 1 / 57 | 11 / 4 / 53 |
