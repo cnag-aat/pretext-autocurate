@@ -2013,3 +2013,29 @@ homologs, not contact. Added instead:
 | qqTroRaco breaks P / R | 86% / 68% | 78% / 39% | 85% / 47% |
 | qqTroRaco junctions | 30/43 / 34/53 | 15/20 / 24/53 | 15/19 / 24/53 |
 | icLarUrsu right / wrong order / missed | 16 / 6 / 58 | 10 / 1 / 57 | 11 / 4 / 53 |
+
+Third round (same day): exact search and a no-YaHS test.
+- exact search: after the greedy path cover, each path is re-arranged by a windowed Held-Karp
+  (8 contigs, links to the neighbours included, 3 passes) on contact + specificity + telomere +
+  graph, without the YaHS prior; a re-arrangement is kept only if it gains `rearrange_gain`
+  (2 / 1 / 0.5 at levels 0 / 0.5 / 1). Only the collapsed-repeat veto applies there (the
+  specificity veto blocked true turns). Offline it found the curator's order for qqTroRaco
+  H1_scaffold_26 (0 1 2r) and the turn in H2_scaffold_1. `solve(trace=dict)` returns the
+  nodes, edges and paths for such checks.
+- `--no-yahs`: no prior, every contig its own node (no merging of small ones), YaHS edges face
+  the same veto and bar as any other.
+
+| level 0.5 | adjacency + exact search | same, `--no-yahs` |
+|---|---|---|
+| qqTroRaco junctions P / R | 28/34 / 28/53 | 37/43 / 22/53 |
+| qqTroRaco breaks P / R | 66% / 63% | 28% / 74% |
+| qqTroRaco chromosomes >=90% in one | 88% | 82% |
+| bAegFun breaks P / R | 67% / 67% | 62% / 89% |
+| bAegFun chromosomes >=90% in one | 95% | 91% |
+| icLarUrsu split / wrong order / missed | 33 / 4 / 53 | 43 / 4 / 52 |
+
+Why YaHS joins were cut without YaHS: icLarUrsu (197 joins) 107 kept, 56 specificity veto,
+29 contig under two 8-px bins, 0 contact below adjacent, 5 other; qqTroRaco (186) 55 kept,
+90 contig too small, 27 specificity, 2 contact below adjacent, 12 other. The contact almost
+never contradicts YaHS; YaHS supplies what the binned map cannot resolve. Next: score small
+contigs at full map resolution and revisit the specificity bar for neighbours, then rerun.

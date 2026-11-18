@@ -35,7 +35,8 @@ from .mapstate import MapState, plan_edits
 from .savestate import BREAK_DELTA, Edit, SaveState
 
 # Weights at levels 0, 0.5, 1 (interpolated): (prior for a YaHS join, bar for a new join)
-LEVELS = {"prior": (2.5, 1.5, 0.75), "join_min": (3.0, 2.0, 1.2), "specific_min": (2.0, 1.5, 1.25)}
+LEVELS = {"prior": (2.5, 1.5, 0.75), "join_min": (3.0, 2.0, 1.2), "specific_min": (2.0, 1.5, 1.25),
+          "rearrange_gain": (2.0, 1.0, 0.5)}
 # R_REF: contact ratio halfway (in log) between background (~0.06 on the toy and real maps) and
 # adjacent sequence (~1), so a misjoin and a true join score about -3 and +3 with W_HIC
 W_HIC, W_SPEC, W_HOM, W_GRAPH, W_TEL, R_REF = 1.5, 1.5, 2.0, 3.0, 1.0, 0.25
@@ -128,6 +129,73 @@ def sharp_breaks(pt, level, end_px=10):
         if c.apply and not c.at_gap and c.far < smax and q - a >= end_px and a + n - 1 - q >= end_px:
             out.append(q)
     return out
+
+
+def rearrange_path(path, w, min_gain, k=8, passes=3):
+    """Re-order and re-orient windows of up to k pieces of `path` ([(node, reversed)]) to
+    maximise the sum of w(exit end, entry end) over adjacent pieces, the window's links to the
+    pieces before and after it included (exact search over the window, Held-Karp). A window is
+    changed only if that gains at least `min_gain`. Returns (new path, total gain)."""
+    out = lambda p: (p[0], "h" if p[1] else "t")           # the end a piece is left by
+    into = lambda p: (p[0], "t" if p[1] else "h")          # the end a piece is entered by
+    link = lambda a, b: w(out(a), into(b))
+    path, total = list(path), 0.0
+    for _ in range(passes):
+        changed = False
+        step = max(1, k // 2)
+        for s in range(0, max(1, len(path) - 1), step):
+            win = path[s:s + k]
+            if len(win) < 2:
+                continue
+            before = path[s - 1] if s > 0 else None
+            after = path[s + k] if s + k < len(path) else None
+
+            def value(order):
+                v = sum(link(a, b) for a, b in zip(order, order[1:]))
+                if before is not None:
+                    v += link(before, order[0])
+                if after is not None:
+                    v += link(order[-1], after)
+                return v
+            n = len(win)
+            nid = [u for u, _ in win]
+            memo = {}
+
+            def f(mask, last, rl):
+                """Best (value, rest) placing the pieces not in mask after piece `last`."""
+                key = (mask, last, rl)
+                if key in memo:
+                    return memo[key]
+                if mask == (1 << n) - 1:
+                    res = (link((nid[last], rl), after) if after is not None else 0.0, ())
+                else:
+                    res = (-math.inf, ())
+                    for j in range(n):
+                        if mask >> j & 1:
+                            continue
+                        for rj in (False, True):
+                            v, rest = f(mask | 1 << j, j, rj)
+                            v += link((nid[last], rl), (nid[j], rj))
+                            if v > res[0]:
+                                res = (v, ((nid[j], rj),) + rest)
+                memo[key] = res
+                return res
+            best_v, best = -math.inf, None
+            for i in range(n):
+                for ri in (False, True):
+                    v, rest = f(1 << i, i, ri)
+                    if before is not None:
+                        v += link(before, (nid[i], ri))
+                    if v > best_v:
+                        best_v, best = v, [(nid[i], ri)] + list(rest)
+            cur = value(win)
+            if best is not None and best != win and best_v - cur >= min_gain:
+                path[s:s + k] = best
+                total += best_v - cur
+                changed = True
+        if not changed:
+            break
+    return path, total
 
 
 def _decay_bins(M, sc, D):
@@ -317,14 +385,16 @@ def telomere_ends(pt, nodes, n=3):
 
 
 def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=None, end_joins=None,
-          unloc_ratio=2.0, chrom_min_px=20, repeat_cov=1.5):
+          unloc_ratio=2.0, chrom_min_px=20, repeat_cov=1.5, trace=None, no_yahs=False):
     """The adjacency solver (module docstring). Returns (rows, savestate, info)."""
     bpp = pt.bp_per_pix
     f = 8
     while pt.tex_res % f:
         f //= 2
     sharp = set(sharp_breaks(pt, level))
-    nodes, yahs = contigs(pt, hap_regex, f=f, breaks=sharp)
+    # no_yahs: the YaHS layout is not evidence (no prior; small contigs are not merged into their
+    # YaHS neighbours); its joins are still reported, to compare with
+    nodes, yahs = contigs(pt, hap_regex, f=f, breaks=sharp, **(dict(min_bins=0, min_px=1) if no_yahs else {}))
     R = end_contact(pt, nodes, f=f)
     proj, share = _projections(pt, nodes, blocks)
     E = lambda v, e: 2 * v + (e == "t")
@@ -398,12 +468,17 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
     covr = _signal(pt).coverage_ratio()
     rep = {v.i: (float(np.median(covr[v.a:v.b + 1])) if covr is not None else 1.0) for v in nodes}
     olen = pt.scaffold_npix * bpp
-    edges = []
-    for key, q in cand.items():
+    yahs_q = {frozenset(((u, "t"), (v, "h"))): q for u, v, q in yahs}
+
+    def score_edge(x, y):
+        """Score of joining ends x and y: dict(x, y, q, parts, total, r, veto); q is the YaHS
+        gap pixel when the assembly already joins them."""
+        key = frozenset((x, y))
         x, y = sorted(key)
+        q = yahs_q.get(key)
         parts = {}
         is_yahs = q is not None
-        if is_yahs:
+        if is_yahs and not no_yahs:
             parts["yahs"] = prior
         r = R[E(*x), E(*y)]
         if np.isfinite(r):
@@ -425,12 +500,13 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         # a new join on Hi-C alone (no homology, no graph) must be specific, and not touch a
         # collapsed repeat (MQ0 multimapping reads contact everything)
         veto = ""
-        if not is_yahs and "graph" not in parts and parts.get("homology", 0) <= 0:
+        if (not is_yahs or no_yahs) and "graph" not in parts and parts.get("homology", 0) <= 0:
             if parts.get("specific", -W_SPEC) / W_SPEC < spec_min:
                 veto = f"Hi-C alone, not specific (needs {2 ** spec_min:.2f}x the next end)"
             elif max(rep[x[0]], rep[y[0]]) >= repeat_cov:
                 veto = f"Hi-C alone, on a collapsed repeat (coverage {max(rep[x[0]], rep[y[0]]):.1f}x)"
-        edges.append(dict(x=x, y=y, q=q, parts=parts, total=total, r=r, veto=veto))
+        return dict(x=x, y=y, q=q, parts=parts, total=total, r=r, veto=veto)
+    edges = [score_edge(*sorted(key)) for key in cand]
     edges.sort(key=lambda e: -e["total"])
     # paths: best edge first, each end once, no cycles
     used, parent = {}, list(range(len(nodes)))
@@ -442,7 +518,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         return a
     taken = []
     for e in edges:
-        bar = 0.0 if e["q"] is not None else join_min
+        bar = 0.0 if e["q"] is not None and not no_yahs else join_min
         if e["veto"] or e["total"] <= bar or e["x"] in used or e["y"] in used or root(e["x"][0]) == root(e["y"][0]):
             continue
         used[e["x"]], used[e["y"]] = e["y"], e["x"]
@@ -473,6 +549,37 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         if path[0][1] and len(path) == 1:
             path = [(path[0][0], False)]
         paths.append(path)
+    # exact re-arrangement inside each path, on contact (+ telomere, graph): the greedy step
+    # changes one join at a time and cannot turn or move a middle piece, and the YaHS prior and
+    # homology on every assembled join hold the assembled order (both haplotypes are curated
+    # together, so each one's homology defends the other's order: qqTroRaco H1_ / H2_scaffold_26)
+    min_gain = _at("rearrange_gain", level)
+
+    def arr_w(x, y):
+        e = score_edge(x, y)
+        if not math.isfinite(e["total"]):
+            return 50.0                    # a hifiasm link: keep
+        # inside a path, specificity already counts in the score; only a collapsed repeat is barred
+        # (the specificity bar is for joining separate scaffolds on Hi-C alone)
+        if e["veto"] and "collapsed repeat" in e["veto"]:
+            return -1e9
+        p = e["parts"]
+        return p.get("hic", 0.0) + p.get("specific", 0.0) + p.get("telomere", 0.0) + p.get("graph", 0.0)
+    rearranged = []
+    for k, path in enumerate(paths):
+        if len(path) < 2:
+            continue
+        new, gain = rearrange_path(path, arr_w, min_gain)
+        if gain > 0:
+            rearranged.append((path, new, gain))
+            paths[k] = new
+    # the joins are now the paths' adjacencies
+    taken, used = [], {}
+    for path in paths:
+        for (u, ru), (v, rv) in zip(path, path[1:]):
+            x, y = (u, "h" if ru else "t"), (v, "t" if rv else "h")
+            taken.append(score_edge(x, y))
+            used[x], used[y] = y, x
     plen = lambda p: sum(nodes[u].n for u, _ in p)
     big = [p for p in paths if plen(p) >= chrom_min_px and any(nodes[u].hic for u, _ in p)]
     small = [p for p in paths if p not in big]
@@ -644,6 +751,12 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
                          strand="", tag="", score=round(e["total"], 2), next_best="",
                          evidence=f"new adjacency, score {e['total']:.2f} ({fmt(e['parts'])}); bar {join_min:.2f} at "
                                   f"level {level:g}"))
+    for old, new, gain in rearranged:
+        show = lambda p: ", ".join(name(u) + (" reversed" if r else "") for u, r in p)
+        rows.append(dict(action="rearrange", scaffold=name(new[0][0]), length_mb=round(plen(new) * bpp / 1e6, 2),
+                         partner="", strand="", tag="", score=round(gain, 2), next_best="",
+                         evidence=f"new order: {show(new)}; contact (+ telomere, graph) gains {gain:.2f} over "
+                                  f"{show(old)} (needs {min_gain:.2f} at level {level:g})"))
     for a, b, bp in pairs:
         rows.append(dict(action="pair", scaffold=" + ".join(name(u) for u, _ in big[a][:3]) + (" ..." if len(big[a]) > 3 else ""),
                          length_mb=round(plen(big[a]) * bpp / 1e6, 2),
@@ -662,4 +775,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
                          evidence="no path of the other haplotype aligns to it at 2x the next"))
     info = dict(nodes=len(nodes), yahs=len(yahs), cuts=len(cuts), joins=sum(e["q"] is None for e in taken),
                 pairs=len(pairs), paths=len(big), unlocs=len(unloc_nodes))
+    if trace is not None:                  # for analysis: the solver's working state
+        trace.update(score_edge=score_edge, nodes=nodes, yahs=yahs, edges=edges, taken=taken, proj=proj, R=R, sharp=sharp, paths=big,
+                     pairs=pairs, unloc=unloc, used=used)
     return rows, st, info

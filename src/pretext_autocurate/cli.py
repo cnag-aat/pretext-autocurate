@@ -402,6 +402,7 @@ def cmd_run(a):
                 if a.engine == "adjacency":
                     from .solver import solve
                     rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex, graph_junctions=gj,
+                                           no_yahs=a.no_yahs,
                                            end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
                     print("adjacency solver: " + ", ".join(f"{k} {v}" for k, v in info.items()), file=sys.stderr)
                 else:
@@ -560,6 +561,9 @@ def main(argv=None):
     p.add_argument("--engine", choices=["rules", "adjacency"], default="rules",
                    help="allhaps: rules = the step-by-step pass; adjacency = the experimental adjacency solver "
                         "(contig ends scored and joined best first; solver.py), for comparison [rules]")
+    p.add_argument("--no-yahs", action="store_true",
+                   help="adjacency engine: do not use the YaHS layout as evidence (scaffold from the contigs; its "
+                        "joins are still reported for comparison)")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
     p.add_argument("--telomere-motif", help="run telo_scan.py (CNAG, bundled) on --fasta for this motif (e.g. TTAGGG for "
