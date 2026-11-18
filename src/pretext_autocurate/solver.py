@@ -36,7 +36,12 @@ from .savestate import BREAK_DELTA, Edit, SaveState
 
 # Weights at levels 0, 0.5, 1 (interpolated): (prior for a YaHS join, bar for a new join)
 LEVELS = {"prior": (2.5, 1.5, 0.75), "join_min": (3.0, 2.0, 1.2), "specific_min": (2.0, 1.5, 1.25),
-          "rearrange_gain": (2.0, 1.0, 0.5)}
+          "rearrange_gain": (2.0, 1.0, 0.5), "mutual_min": (1.0, 0.85, 0.7)}
+# mutual_min: a Hi-C-alone join that is not specific by the specific_min margin may still be made
+# when its two ends are each other's best and their contact is near that of adjacent sequence
+# (ratio ~1): neighbouring contigs in one chromosome often have a second end almost as close
+# (qqTroRaco without YaHS: of the YaHS joins blocked by specificity, the 8 mutual best at >= 0.97
+# were all kept by the curator; the 2 it broke were at 0.70 and 0.77)
 # R_REF: contact ratio halfway (in log) between background (~0.06 on the toy and real maps) and
 # adjacent sequence (~1), so a misjoin and a true join score about -3 and +3 with W_HIC
 W_HIC, W_SPEC, W_HOM, W_GRAPH, W_TEL, R_REF = 1.5, 1.5, 2.0, 3.0, 1.0, 0.25
@@ -208,10 +213,11 @@ def _decay_bins(M, sc, D):
     return g
 
 
-def end_contact(pt, nodes, f=8, wmax=8):
+def end_contact(pt, nodes, f=8, wmax=8, fine_px=0):
     """Contact between every pair of contig ends, as observed / expected for adjacent ends
     (E x E, E = 2 x nodes; end 2i = head of node i, 2i+1 = tail). Ends of nodes under two bins
-    have no usable window (nan); `node.hic` says whether a node has one."""
+    have no usable window (nan) unless `fine_px` > 0: then nodes of at least that many pixels are
+    scored at full resolution (`_fine_contact`); `node.hic` says whether a node has a value."""
     sg = _signal(pt)
     while pt.tex_res % f:
         f //= 2
@@ -246,13 +252,66 @@ def end_contact(pt, nodes, f=8, wmax=8):
         for y in ok:
             if x // 2 != y // 2:
                 R[x, y] = O[x, y] / max(expect(win[x], win[y]), 1e-9)
+    if fine_px:
+        _fine_contact(pt, nodes, R, f * wmax, fine_px)
     return R
+
+
+def _fine_contact(pt, nodes, R, wmax_px, min_px):
+    """Fill in R for the ends of nodes too small for the binned windows, from the full-resolution
+    map: each small node's end rows (up to half the node) against every end's window (up to
+    wmax_px, gap pixels left out), as observed / expected for adjacent windows of those sizes.
+    Only the small nodes' own rows are read, so this costs a strip per small node, not a map."""
+    sg = _signal(pt)
+    gap = pt.graphs.get("gap")
+    gap = np.zeros(pt.npix) if gap is None else gap
+
+    def core(v):                          # the node without the gap pixels at its ends
+        a, b = v.a, v.b
+        while a < b and gap[a] > 0:
+            a += 1
+        while b > a and gap[b] > 0:
+            b -= 1
+        return a, b
+    E = 2 * len(nodes)
+    lo, hi = np.zeros(E, dtype=int), np.zeros(E, dtype=int)         # window [lo, hi) per end
+    cores = {}
+    for v in nodes:
+        a, b = cores[v.i] = core(v)
+        w = min(wmax_px, (b - a + 1) // 2)
+        lo[2 * v.i], hi[2 * v.i] = a, a + w
+        lo[2 * v.i + 1], hi[2 * v.i + 1] = b + 1 - w, b + 1
+    wid = hi - lo
+    g = sg.decay_long(2 * wmax_px + 2)
+    i = np.arange(wmax_px)
+    tab = {}
+
+    def expect(wa):                       # expected sum for windows wa x (0..wmax_px), abutting
+        if wa not in tab:
+            tab[wa] = np.array([g[i[:wa, None] + i[None, :wb] + 1].sum() for wb in range(wmax_px + 1)])
+        return tab[wa]
+    small = sorted((v for v in nodes if not v.hic and wid[2 * v.i] >= max(1, min_px // 2)),
+                   key=lambda v: v.a)     # map order: neighbouring strips share textures in the cache
+    for v in small:
+        a, b = cores[v.i]
+        S = sg.strip(a, b)
+        for x in (2 * v.i, 2 * v.i + 1):
+            rows = S[lo[x] - a:hi[x] - a].sum(axis=0, dtype=np.float64)
+            cs = np.concatenate([[0.0], np.cumsum(rows)])
+            obs = cs[hi] - cs[lo]
+            ex = expect(int(wid[x]))[wid]
+            r = np.where((wid > 0) & (ex > 0), obs / np.maximum(ex, 1e-9), np.nan)
+            r[2 * v.i:2 * v.i + 2] = np.nan
+            R[x, :] = r
+            R[:, x] = r
+        v.hic = True
 
 
 def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
     """Per end: (other haplotype's scaffold, position bp, direction): where the end lands on the
     other haplotype and which way it moves along it as one walks out of the node through that
-    end. Also, per node, aligned bp to each node of the other haplotype."""
+    end. Also, per node, aligned bp to each node of the other haplotype (`share`), and the same
+    signed by strand (`sense`: + same strand, - opposite)."""
     idx = {n: i for i, n in enumerate(pt.names)}
     bpp = pt.bp_per_pix
     by_s = collections.defaultdict(list)                   # scaffold -> nodes (in order)
@@ -282,6 +341,7 @@ def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
         lo, hi = (w.a - a0) * bpp, (w.b + 1 - a0) * bpp
         return (O, p, d, w.i, max(0.0, (hi - p) if d > 0 else (p - lo)))
     proj, share = {}, collections.defaultdict(lambda: collections.defaultdict(float))
+    sense = collections.defaultdict(lambda: collections.defaultdict(float))     # bp, + same strand
     for v in nodes:
         lo = (v.a - int(pt.scaffold_start[v.s])) * bpp
         hi = (v.b + 1 - int(pt.scaffold_start[v.s])) * bpp
@@ -297,6 +357,7 @@ def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
             w = node_at(o, (o0 + o1) / 2)
             if w is not None:
                 share[v.i][w.i] += b - a
+                sense[v.i][w.i] += (b - a) if same else -(b - a)
         if not mine:
             continue
         tot = collections.Counter()
@@ -321,7 +382,7 @@ def _projections(pt, nodes, blocks, min_mapq=30, end_bp=2_000_000):
             d = 1 if same else -1
             p = (o1 if same else o0) + d * (hi - b)
             proj[(v.i, "t")] = landing(O, p, d)
-    return proj, share
+    return proj, share, sense
 
 
 def _homology(p, q, olen=None, near=1_000_000, far=5_000_000, slack=500_000):
@@ -377,26 +438,190 @@ def telomere_ends(pt, nodes, n=3):
         return out
     thr = max(50.0, 5 * float(np.percentile(tel, 99)))
     for v in nodes:
-        if float(tel[v.a:v.a + n].max()) >= thr:
+        if (v.i, "h") not in out and float(tel[v.a:v.a + n].max()) >= thr:
             out[(v.i, "h")] = "any"
-        if float(tel[max(0, v.b - n + 1):v.b + 1].max()) >= thr:
+        if (v.i, "t") not in out and float(tel[max(0, v.b - n + 1):v.b + 1].max()) >= thr:
             out[(v.i, "t")] = "any"
     return out
 
 
+def repeat_ends(pt, nodes, n=8, min_frac=0.5, rep=None):
+    """Ends whose outer n pixels (at most half the node) are mostly repeat (the `repeat` track, a
+    fraction per pixel: Red or the map's repeat_density). Empty without a repeat track."""
+    rep = pt.graphs.get("repeat") if rep is None else rep
+    out = set()
+    if rep is None:
+        return out
+    for v in nodes:
+        k = max(1, min(n, v.n // 2))
+        if float(np.mean(rep[v.a:v.a + k])) >= min_frac:
+            out.add((v.i, "h"))
+        if float(np.mean(rep[v.b - k + 1:v.b + 1])) >= min_frac:
+            out.add((v.i, "t"))
+    return out
+
+
+def _one_direction(blocks):
+    """An all-vs-all PAF holds most alignments twice (A on B and B on A); keep one direction
+    ((q, qs) > (t, ts)) when the file has both. A one-way PAF (H2 vs H1) is returned as is."""
+    blocks = list(blocks or [])
+    fwd = any(b.q > b.t for b in blocks)
+    back = any(b.q < b.t for b in blocks)
+    if not (fwd and back):
+        return blocks
+    return [b for b in blocks if (b.q, b.qs) > (b.t, b.ts)]
+
+
+def _merged_len(iv):
+    tot, end = 0, -1
+    for a, b in sorted(iv):
+        if b > end:
+            tot += b - max(a, end)
+            end = b
+    return tot
+
+
+def _overlap_len(A, B):
+    """bp of interval list A covered by interval list B."""
+    def merge(iv):
+        out = []
+        for a, b in sorted(iv):
+            if out and a <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return out
+    A, B = merge(A), merge(B)
+    i = j = t = 0
+    while i < len(A) and j < len(B):
+        t += max(0, min(A[i][1], B[j][1]) - max(A[i][0], B[j][0]))
+        if A[i][1] < B[j][1]:
+            i += 1
+        else:
+            j += 1
+    return t
+
+
+def rephase(pt, blocks, hap_of, covr=None, cov_range=(0.6, 1.5), min_bp=300_000, min_frac=0.3,
+            max_covered=0.3):
+    """Scaffolds hifiasm put in the wrong haplotype, from an all-vs-all PAF (curator, bAegFun
+    H1_scaffold_40: a copy of part of H1_scaffold_33, in HAP2's place). A scaffold moves to the
+    other haplotype when its best homolog is a larger scaffold of its own haplotype (>= min_bp and
+    min_frac of it; 2x the second same-haplotype partner; more than it aligns to the other
+    haplotype), it is at about haploid coverage (not a repeat or false-duplicate copy), and the
+    partner's region it copies has no other-haplotype homolog (< max_covered): the piece is that
+    missing copy. With one there (bAegFun H1_scaffold_44 on H1_scaffold_36) it is a third copy,
+    not moved. Returns ({scaffold: new haplotype}, [explanations])."""
+    idx = {n: i for i, n in enumerate(pt.names)}
+    haps = sorted({h for h in hap_of.values() if h})
+    if len(haps) != 2:
+        return {}, []
+    L = {n: int(pt.scaffold_npix[i]) * pt.bp_per_pix for n, i in idx.items()}
+    same = collections.defaultdict(collections.Counter)
+    cross = collections.Counter()
+    on_p = collections.defaultdict(list)
+    cross_iv = collections.defaultdict(list)
+    for b in blocks:
+        if b.q == b.t or b.q not in idx or b.t not in idx:
+            continue
+        n = b.qe - b.qs
+        if hap_of.get(b.q) == hap_of.get(b.t):
+            same[b.q][b.t] += n
+            same[b.t][b.q] += n
+            on_p[(b.q, b.t)].append((b.ts, b.te))
+            on_p[(b.t, b.q)].append((b.qs, b.qe))
+        else:
+            cross[b.q] += n
+            cross[b.t] += n
+            cross_iv[b.t].append((b.ts, b.te))
+            cross_iv[b.q].append((b.qs, b.qe))
+    moved, why = {}, []
+    for s, partners in same.items():
+        (p, bp), *rest = partners.most_common(2) + [(None, 0)]
+        second = rest[0][1]
+        if bp < max(min_bp, min_frac * L[s]) or L[s] >= L[p] or bp < 2 * second or bp <= cross[s]:
+            continue
+        i = idx[s]
+        c = float(np.median(covr[pt.scaffold_start[i]:pt.scaffold_start[i] + pt.scaffold_npix[i]])) \
+            if covr is not None else 1.0
+        if not cov_range[0] <= c < cov_range[1]:
+            continue
+        region = on_p[(s, p)]
+        covered = _overlap_len(region, cross_iv[p]) / max(_merged_len(region), 1)
+        if covered >= max_covered:
+            continue
+        new = next(h for h in haps if h != hap_of[s])
+        moved[s] = new
+        why.append((s, p, new, bp, cross[s], covered, c))
+    return moved, why
+
+
+def copies_track(pt, blocks):
+    """Per pixel, how many alignments cover it (both sides of each block). About 1 where the
+    other haplotype's homolog is the only copy; repeats and shrapnel more. Returned as a repeat
+    track (1 where >= 3 alignments cover the pixel, else 0), the stand-in for `repeat` (Red)
+    when the map has none."""
+    idx = {n: i for i, n in enumerate(pt.names)}
+    bpp = pt.bp_per_pix
+    d = np.zeros(pt.npix + 1)
+    for b in blocks:
+        for s, a, e in ((b.q, b.qs, b.qe), (b.t, b.ts, b.te)):
+            i = idx.get(s)
+            if i is None:
+                continue
+            a0 = int(pt.scaffold_start[i])
+            lo, hi = a0 + int(a // bpp), a0 + int((e - 1) // bpp) + 1
+            d[lo] += 1
+            d[min(hi, pt.npix)] -= 1
+    n = np.cumsum(d)[:pt.npix]
+    return (n >= 3).astype(float)
+
+
 def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=None, end_joins=None,
-          unloc_ratio=2.0, chrom_min_px=20, repeat_cov=1.5, trace=None, no_yahs=False):
-    """The adjacency solver (module docstring). Returns (rows, savestate, info)."""
+          unloc_ratio=2.0, chrom_min_px=20, repeat_cov=1.5, trace=None, no_yahs=False, fine_px=0,
+          unpaired_cov=(0.6, 1.5)):
+    """The adjacency solver (module docstring). Returns (rows, savestate, info). `fine_px` > 0:
+    contigs under two bins are scored at full resolution down to that many pixels, not merged."""
     bpp = pt.bp_per_pix
     f = 8
     while pt.tex_res % f:
         f //= 2
     sharp = set(sharp_breaks(pt, level))
     # no_yahs: the YaHS layout is not evidence (no prior; small contigs are not merged into their
-    # YaHS neighbours); its joins are still reported, to compare with
-    nodes, yahs = contigs(pt, hap_regex, f=f, breaks=sharp, **(dict(min_bins=0, min_px=1) if no_yahs else {}))
-    R = end_contact(pt, nodes, f=f)
-    proj, share = _projections(pt, nodes, blocks)
+    # YaHS neighbours); its joins are still reported, to compare with. fine_px: small contigs
+    # down to fine_px are their own nodes, smaller ones still merge
+    if no_yahs:
+        kw = dict(min_bins=0, min_px=1)
+    elif fine_px:
+        kw = dict(min_bins=0, min_px=fine_px)
+    else:
+        kw = {}
+    nodes, yahs = contigs(pt, hap_regex, f=f, breaks=sharp, **kw)
+    R = end_contact(pt, nodes, f=f, fine_px=fine_px)
+    covr = _signal(pt).coverage_ratio()
+    # alignments: an H2-vs-H1 PAF, or all-vs-all (curator's choice): sorted here into across the
+    # haplotypes (projections, pairing), within one haplotype (mis-phasing, copies that must not
+    # be joined) and within one scaffold (repeats)
+    blocks = _one_direction(blocks)
+    hap_of = {}
+    for n in pt.names:
+        m = re.match(hap_regex, n)
+        hap_of[n] = m.group(1) if m else ""
+    moved, moved_why = rephase(pt, blocks, hap_of, covr) if blocks else ({}, [])
+    hap_of.update(moved)
+    for v in nodes:
+        v.hap = hap_of[pt.names[v.s]]
+    across = [b for b in blocks if b.q in hap_of and b.t in hap_of and hap_of[b.q] != hap_of[b.t]]
+    within = [b for b in blocks if b.q != b.t and b.q in hap_of and hap_of.get(b.q) == hap_of.get(b.t)]
+    sidx = {n: i for i, n in enumerate(pt.names)}
+    copy_bp = collections.Counter()
+    for b in within:
+        copy_bp[frozenset((sidx[b.q], sidx[b.t]))] += b.qe - b.qs
+    copies_of = {k for k, bp in copy_bp.items() if bp >= 300_000}
+    reptrack = pt.graphs.get("repeat")
+    if reptrack is None and any(b.q == b.t for b in blocks):
+        reptrack = copies_track(pt, blocks)            # all-vs-all without Red
+    proj, share, sense = _projections(pt, nodes, across)
     E = lambda v, e: 2 * v + (e == "t")
     mb = lambda v: nodes[v].n * bpp / 1e6
     name = lambda v: f"{pt.names[nodes[v].s]}:{(nodes[v].a - int(pt.scaffold_start[nodes[v].s])) * bpp / 1e6:.2f}" \
@@ -464,8 +689,12 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
             return float(np.nanmax(row))
         return float("nan")
     tel = telomere_ends(pt, nodes)
+    rep_end = repeat_ends(pt, nodes, rep=reptrack)
+    # repeat-rich contigs (most of the contig): shrapnel, where no join or cut is made on contact
+    rep_node = ({v.i for v in nodes if float(np.mean(reptrack[v.a:v.b + 1])) >= 0.5}
+                if reptrack is not None else set())
     spec_min = math.log2(_at("specific_min", level))
-    covr = _signal(pt).coverage_ratio()
+    mutual_min = _at("mutual_min", level)
     rep = {v.i: (float(np.median(covr[v.a:v.b + 1])) if covr is not None else 1.0) for v in nodes}
     olen = pt.scaffold_npix * bpp
     yahs_q = {frozenset(((u, "t"), (v, "h"))): q for u, v, q in yahs}
@@ -497,12 +726,32 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         total = sum(parts.values())
         if is_yahs and (x[0], y[0]) in fixed or (is_yahs and (y[0], x[0]) in fixed):
             total, parts["graph_link"] = math.inf, math.inf
+        elif (is_yahs and not no_yahs and x[0] in rep_node and y[0] in rep_node
+              and "out" not in (tel.get(x), tel.get(y))):
+            # inside repetitive shrapnel neither contact nor the curator can decide: as assembled;
+            # an outward telomere (telo_scan strands) still marks a chromosome end there (bAegFun
+            # H2_scaffold_30 2.84 Mb, H2_scaffold_31 2.55 Mb: curator cuts)
+            total, parts["shrapnel"] = math.inf, math.inf
         # a new join on Hi-C alone (no homology, no graph) must be specific, and not touch a
         # collapsed repeat (MQ0 multimapping reads contact everything)
         veto = ""
-        if (not is_yahs or no_yahs) and "graph" not in parts and parts.get("homology", 0) <= 0:
-            if parts.get("specific", -W_SPEC) / W_SPEC < spec_min:
-                veto = f"Hi-C alone, not specific (needs {2 ** spec_min:.2f}x the next end)"
+        sx, sy = nodes[x[0]].s, nodes[y[0]].s
+        if (not is_yahs or no_yahs) and sx != sy and frozenset((sx, sy)) in copies_of:
+            # the two are copies of one region in one haplotype (all-vs-all): never one chromosome
+            # (bAegFun H1_scaffold_33 + H1_scaffold_36's copy H1_scaffold_44)
+            veto = "two copies of one region in one haplotype"
+        elif (not is_yahs or no_yahs) and "graph" not in parts and parts.get("homology", 0) <= 0:
+            spec = parts.get("specific", -W_SPEC) / W_SPEC
+            # each other's best, at adjacent-level contact; not at a telomere, where chromosome
+            # ends cluster (bAegFun H2_scaffold_6 / _7 starts)
+            mutual = spec >= 0 and r >= mutual_min and not (tel.get(x) or tel.get(y))
+            if x in rep_end or y in rep_end:
+                # MQ0 contact between repeat arrays looks like adjacency (subtelomeric arrays,
+                # repetitive shrapnel): Hi-C alone is no evidence there
+                veto = "Hi-C alone, at a repeat-rich end"
+            elif spec < spec_min and not mutual:
+                veto = (f"Hi-C alone, not specific (needs {2 ** spec_min:.2f}x the next end, or each other's "
+                        f"best at contact >= {mutual_min:.2f})")
             elif max(rep[x[0]], rep[y[0]]) >= repeat_cov:
                 veto = f"Hi-C alone, on a collapsed repeat (coverage {max(rep[x[0]], rep[y[0]]):.1f}x)"
         return dict(x=x, y=y, q=q, parts=parts, total=total, r=r, veto=veto)
@@ -612,6 +861,17 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
             off += nodes[u].n
 
     def same_dir(a, b):
+        """Whether path b, as laid out, runs the same way as path a: by alignment strand, each
+        node taken as laid out (reversed or not), so a pair of one-contig paths is turned too
+        (the old position test needed two nodes per path and left those crossed: an X)."""
+        flip = {u: r for u, r in big[b]}
+        s = 0.0
+        for u, ru in big[a]:
+            for w, bp in sense.get(u, {}).items():
+                if w in flip:
+                    s += bp * (-1 if ru else 1) * (-1 if flip[w] else 1)
+        if s:
+            return s > 0
         xs, ys, ws = [], [], []
         for u, _ in big[a]:
             for w, bp in share.get(u, {}).items():
@@ -682,15 +942,29 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         copies += [(h1, "HAP1", (a, b, bp)), (h2, "HAP2", (a, b, bp))]
     for k in sorted(set(range(len(big))) - in_pair, key=lambda k: -plen(big[k])):
         copies.append((k, None, None))
+    # paint only putative chromosomes (curator): every paired path; an unpaired one only at about
+    # haploid coverage and not mostly repeat. bAegFun's unpaired paths are ~50 pieces of 0.8-3.7
+    # Mb at coverage ~0.35, repeat-rich shrapnel, not chromosomes
+
+    def chromosome_like(k):
+        px = np.concatenate([np.arange(nodes[u].a, nodes[u].b + 1) for u, _ in big[k]])
+        c = float(np.median(covr[px])) if covr is not None else 1.0
+        rf = float(np.mean(reptrack[px])) if reptrack is not None else 0.0
+        return unpaired_cov[0] <= c < unpaired_cov[1] and rf < 0.5
     order, paint, tag = [], {}, {}
-    for n_, (k, t, _) in enumerate(copies, 1):
+    n_ = 0
+    for k, t, _ in copies:
+        painted = t is not None or chromosome_like(k)
+        n_ += painted
         for u, r in big[k]:
             order.append((u, r))
-            paint[u], tag[u] = n_, t
+            if painted:
+                paint[u], tag[u] = n_, t
         for p in unloc.get(k, []):
             for u, r in p:
                 order.append((u, r))
-                paint[u], tag[u] = n_, t
+                if painted:
+                    paint[u], tag[u] = n_, t
     placed = {u for u, _ in order}
     rest = [(v.i, False) for v in nodes if v.i not in placed]
     perm = np.concatenate([np.arange(nodes[u].a, nodes[u].b + 1)[::-1] if r else np.arange(nodes[u].a, nodes[u].b + 1)
@@ -719,7 +993,7 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         mask = 0
         if tag.get(u):
             mask |= 1 << st.tag_id(tag[u])
-        if u in unloc_nodes:
+        if u in unloc_nodes and u in paint:
             mask |= 1 << st.tag_id("Unloc")
         if mask:
             st.meta_flags.append((i, mask))
@@ -773,8 +1047,14 @@ def solve(pt, blocks=None, level=0.5, hap_regex=r"^(H\d+)_", graph_junctions=Non
         rows.append(dict(action="unpaired", scaffold=name(big[k][0][0]), length_mb=round(plen(big[k]) * bpp / 1e6, 2),
                          partner="", strand="", tag="", score="", next_best="",
                          evidence="no path of the other haplotype aligns to it at 2x the next"))
+    for s, p, new, bp, cbp, covered, c in moved_why:
+        rows.append(dict(action="rephase", scaffold=s, length_mb=round(int(pt.scaffold_npix[sidx[s]]) * bpp / 1e6, 2),
+                         partner=p, strand="", tag=new, score=round(bp / 1e6, 2), next_best=round(cbp / 1e6, 2),
+                         evidence=f"a copy of {p} in its own haplotype ({bp / 1e6:.2f} Mb aligned; {cbp / 1e6:.2f} Mb to "
+                                  f"the other haplotype); {100 * covered:.0f}% of that region of {p} has a homolog in "
+                                  f"the other haplotype, so this is the missing one: moved to {new} (coverage {c:.2f})"))
     info = dict(nodes=len(nodes), yahs=len(yahs), cuts=len(cuts), joins=sum(e["q"] is None for e in taken),
-                pairs=len(pairs), paths=len(big), unlocs=len(unloc_nodes))
+                pairs=len(pairs), paths=len(big), unlocs=len(unloc_nodes), rephased=len(moved))
     if trace is not None:                  # for analysis: the solver's working state
         trace.update(score_edge=score_edge, nodes=nodes, yahs=yahs, edges=edges, taken=taken, proj=proj, R=R, sharp=sharp, paths=big,
                      pairs=pairs, unloc=unloc, used=used)

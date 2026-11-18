@@ -3,7 +3,18 @@ the PAF shifted back onto whole query sequences. Like D-GENIES' split_before: wh
 queries on a repeat-rich genome can make asm5 chaining take tens of GB.
 
     python3 tools/align_chunked.py REF.fa(.gz) QUERY.fa OUT.paf [--chunk-mb 10] [-t 4]
-                                   [--preset asm5] [--max-rss-gb 12]
+                                   [--preset asm5] [--max-rss-gb 12] [--no-chunk] [--secondary]
+
+All-vs-all (the assembly against itself, each sequence's own diagonal skipped):
+    python3 tools/align_chunked.py ASM.fa ASM.fa OUT.paf --no-chunk --secondary \
+        --mm-args "-D -N 5 -p 0.5 -K 20M --cap-kalloc 1g"
+minimap2's -D only skips the diagonal of a query with the target's own name and length, so it
+needs whole sequences (--no-chunk), and the other copies of a region are secondary alignments.
+Whole chromosomes of a large repeat-rich genome can pass the memory cap (qqTroRaco, icLarUrsu
+passed 16 GB); then keep the chunks and drop each chunk's own diagonal after the fact:
+    python3 tools/align_chunked.py ASM.fa ASM.fa OUT.paf --secondary --drop-self \
+        --mm-args "-N 5 -p 0.5 -K 20M --cap-kalloc 1g -f 0.002"
+(a chunk's best hit is then itself, so a copy is kept only as a secondary at >= half its score).
 
 The chunks are streamed to minimap2 on stdin (no copy on disk). A watchdog kills minimap2 if
 its resident memory passes --max-rss-gb (the machine has 24 GB; swap on a full disk crashed it).
@@ -82,17 +93,23 @@ def main():
     ap.add_argument("--mm-args", default="-K 20M --cap-kalloc 1g -f 0.002",
                     help="extra minimap2 options (small batches, capped per-thread memory, more repeat masking)")
     ap.add_argument("--query-regex", help="align only query sequences whose name matches (e.g. ^H2_)")
+    ap.add_argument("--no-chunk", action="store_true",
+                    help="stream whole sequences under their own names (for -D in all-vs-all); the watchdog stays")
+    ap.add_argument("--secondary", action="store_true", help="keep secondary alignments (default: --secondary=no)")
+    ap.add_argument("--drop-self", action="store_true",
+                    help="all-vs-all with chunks: drop each chunk's alignment to its own place (what -D does "
+                         "for whole sequences)")
     a = ap.parse_args()
-    size = int(a.chunk_mb * 1e6)
+    size = int(a.chunk_mb * 1e6) if not a.no_chunk else 1 << 40
     qlen = lengths(a.query)
-    cmd = [a.minimap2, "-x", a.preset, "-t", str(a.threads), "--secondary=no", *shlex.split(a.mm_args), a.ref, "-"]
+    cmd = [a.minimap2, "-x", a.preset, "-t", str(a.threads), *([] if a.secondary else ["--secondary=no"]), *shlex.split(a.mm_args), a.ref, "-"]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1 << 20)
     state = {"killed": False, "peak": 0.0}
 
     def feed():
         try:
             for name, off, s in chunks(a.query, size, re.compile(a.query_regex) if a.query_regex else None):
-                p.stdin.write(f">{name}::{off}\n")
+                p.stdin.write(f">{name}\n" if a.no_chunk else f">{name}::{off}\n")
                 for i in range(0, len(s), 100000):
                     p.stdin.write(s[i:i + 100000] + "\n")
         except BrokenPipeError:
@@ -125,10 +142,13 @@ def main():
     with open(tmp, "w") as out:
         for line in p.stdout:
             c = line.rstrip("\n").split("\t")
-            name, off = c[0].rsplit("::", 1)
+            name, off = (c[0], 0) if a.no_chunk else c[0].rsplit("::", 1)
             off = int(off)
             c[0], c[1] = name, str(qlen[name])
             c[2], c[3] = str(int(c[2]) + off), str(int(c[3]) + off)
+            if (a.drop_self and c[0] == c[5] and c[4] == "+" and abs(int(c[2]) - int(c[7])) <= 1000
+                    and abs(int(c[3]) - int(c[8])) <= 1000):
+                continue                          # a chunk on its own place in its own sequence
             out.write("\t".join(c) + "\n")
             n += 1
     rc = p.wait()

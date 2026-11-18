@@ -106,7 +106,8 @@ def cmd_haplotigs(a):
 
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
-REVIEW_ALLHAPS = {"keep": "site flagged, nothing changed", "arrangement_differs": "the two haplotypes disagree",
+REVIEW_ALLHAPS = {"rephase": "a copy of a same-haplotype scaffold, moved to the other haplotype (all-vs-all PAF)",
+                  "keep": "site flagged, nothing changed","arrangement_differs": "the two haplotypes disagree",
                   "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
                   "graph_keep": "unitig path across the gap: rearrangement there dropped",
                   "graph_join_candidate": "scaffold ends only the hifiasm graph joins: not made",
@@ -402,7 +403,7 @@ def cmd_run(a):
                 if a.engine == "adjacency":
                     from .solver import solve
                     rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex, graph_junctions=gj,
-                                           no_yahs=a.no_yahs,
+                                           no_yahs=a.no_yahs, fine_px=a.fine_px,
                                            end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
                     print("adjacency solver: " + ", ".join(f"{k} {v}" for k, v in info.items()), file=sys.stderr)
                 else:
@@ -564,6 +565,9 @@ def main(argv=None):
     p.add_argument("--no-yahs", action="store_true",
                    help="adjacency engine: do not use the YaHS layout as evidence (scaffold from the contigs; its "
                         "joins are still reported for comparison)")
+    p.add_argument("--fine-px", type=int, default=0,
+                   help="adjacency engine: score contigs too small for the binned contact windows at full map "
+                        "resolution, down to this many pixels, instead of merging them into a neighbour (0: off) [0]")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
     p.add_argument("--telomere-motif", help="run telo_scan.py (CNAG, bundled) on --fasta for this motif (e.g. TTAGGG for "

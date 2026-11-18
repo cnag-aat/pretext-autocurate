@@ -2039,3 +2039,132 @@ Why YaHS joins were cut without YaHS: icLarUrsu (197 joins) 107 kept, 56 specifi
 90 contig too small, 27 specificity, 2 contact below adjacent, 12 other. The contact almost
 never contradicts YaHS; YaHS supplies what the binned map cannot resolve. Next: score small
 contigs at full map resolution and revisit the specificity bar for neighbours, then rerun.
+
+Fourth round (same day): small contigs at full resolution (`--fine-px N`, off by default).
+Contigs under two 8-px bins are no longer merged into a neighbour (down to N px) and their end
+contact is read from the full-resolution map: each small node's end rows (up to half the node,
+gap pixels left out) against every end's window (up to 64 px), observed / expected from the
+full-resolution decay. One strip per small node; the solver takes ~75-85 s instead of ~35 s.
+
+Without YaHS, the YaHS joins kept rise from 107 to 123 of 197 (icLarUrsu) and from 55 to 120
+of 186 (qqTroRaco); the specificity veto is now the main reason a YaHS join is lost (63 / 36).
+
+| level 0.5 | with YaHS | + fine 2 px | without YaHS | + fine 2 px |
+|---|---|---|---|---|
+| qqTroRaco junctions P / R | 28/34 / 28/53 | 35/43 / 25/53 | 37/43 / 22/53 | 30/37 / 22/53 |
+| qqTroRaco breaks P / R | 66% / 63% | 48% / 66% | 28% / 74% | 41% / 74% |
+| qqTroRaco chromosomes >=90% in one | 88% | 88% | 82% | 81% |
+| bAegFun junctions | 2/5 / 2/7 | 1/7 / 1/7 | - | 1/4 / 1/7 |
+| bAegFun breaks P / R | 67% / 67% | 67% / 67% | 62% / 89% | 62% / 89% |
+| icLarUrsu right / wrong order / split | 11 / 4 / 33 | 16 / 4 / 34 | 13 / 4 / 43 | 17 / 5 / 44 |
+
+A floor of 4 or 8 px instead of 2 changes little (qqTroRaco with YaHS: breaks 52% / 53%).
+With YaHS, the 15 new qqTroRaco breaks the curator did not make all sit next to pieces of
+2-36 px (H1_scaffold_43 4.39-4.93 and 8.65-8.79 Mb, H2_scaffold_40 18.71-19.84 Mb,
+H2_scaffold_55, _61): small pieces taken out of place, which the curator left; not yet checked
+in PretextView whether they are misplaced.
+
+Fifth round (same day): mutual-best rule. A Hi-C-alone join that misses the specificity margin
+is still allowed when its two ends are each other's best same-haplotype end and their contact
+ratio is at least `mutual_min` (1.0 / 0.85 / 0.7 at levels 0 / 0.5 / 1; ~1 = adjacent
+sequence). Measured first on qqTroRaco without YaHS, on the YaHS joins the specificity veto
+blocked: the 8 mutual-best ones at contact >= 0.97 were all kept by the curator; the 2 the
+curator broke had contact 0.70 and 0.77.
+
+| level 0.5, with mutual-best | with YaHS | + fine 2 px | without YaHS | + fine 2 px |
+|---|---|---|---|---|
+| qqTroRaco junctions P / R | 27/35 / 28/53 | 34/45 / 25/53 | 40/48 / 24/53 | 31/41 / 23/53 |
+| qqTroRaco breaks P / R | 66% / 63% | 48% / 66% | 30% / 74% | 44% / 76% |
+| qqTroRaco chromosomes >=90% in one | 88% | 88% | 84% | 82% |
+| bAegFun junctions | 3/23 / 3/7 | 2/27 / 2/7 | 3/22 / 3/7 | 2/27 / 2/7 |
+| bAegFun breaks P / R | 75% / 67% | 67% / 67% | 62% / 89% | 57% / 89% |
+| icLarUrsu right / wrong order / split | 12 / 4 / 33 | 17 / 4 / 34 | 14 / 4 / 43 | 18 / 5 / 44 |
+
+On the bird the rule makes ~18 more joins, nearly all wrong. The ones seen so far join
+chromosome ends (H1_scaffold_1 0.25 Mb to its own 264.4 Mb end; two scaffold starts):
+chromosome ends cluster at MQ0, so two ends can be each other's best. Next: keep the rule away
+from scaffold ends / telomeric ends.
+
+`tools/mark_disagreements.py MAP REF OUT_DIR TOOL...`: a copy of the map (same file name, so
+every savestate still opens) with one `vs_ref_<label>` track per tool savestate marking extra
+breaks (4), wrong joins (3), missed breaks (2), missed joins (1) as `score.compare` counts them,
+the savestates with that track shown, numbered waypoints when a savestate had none, and a TSV.
+For the curator's review: work/review/qqTroRaco and work/review/bAegFun (rules, adjacency,
+mutual-best at level 0.5).
+
+Sixth round (same day): fixes from the curator's review of the bird (work/review/bAegFun).
+- H1_scaffold_8 / H2_scaffold_7 unpaired: mutual-best joined the starts of H2_scaffold_6 and
+  H2_scaffold_7 (contact 0.93, 1.06x the next end; the curator: subtelomeric repeat contact), and
+  that path paired with H1_scaffold_7. The starts carry a telomere in the map's own track (192,
+  128) that both telo_scan strand tracks miss (0), and are 100% Red repeat for 12+ px.
+  `tracks.load` now keeps the map's track as `telomere_map`, and `telomere_ends` uses it where
+  the strand tracks see nothing. Mutual-best does not apply at a telomeric end, and no join is
+  made on Hi-C alone at an end whose outer 8 px are mostly repeat (`repeat_ends`).
+- painting only for putative chromosomes (curator): paired paths, and unpaired ones only at
+  0.6-1.5x coverage and under half repeat (`unpaired_cov`). On the bird this unpaints ~50
+  repeat-rich pieces of 0.8-3.7 Mb at ~0.35x coverage. Unloc tags only on painted pieces.
+- pairs in parallel, never an X (curator): the second copy is turned by alignment strand
+  (`_projections` returns `sense`, signed bp per node pair); the old test compared node
+  positions and needed two nodes per path, so one-contig pairs stayed crossed. Crossed homolog
+  scaffold pairs (>= 5 Mb aligned): bAegFun 10 of 29 -> 0, qqTroRaco 18 of 73 -> 4 (rules 1 / 4).
+
+| level 0.5 | mutual-best | + review fixes | without YaHS, + fixes |
+|---|---|---|---|
+| bAegFun junctions P / R | 3/23 / 3/7 | 1/4 / 1/7 | 1/2 / 1/7 |
+| bAegFun breaks P / R | 75% / 67% | 67% / 67% | 62% / 89% |
+| qqTroRaco junctions P / R | 27/35 / 28/53 | 27/35 / 27/53 | 40/48 / 23/53 |
+| qqTroRaco breaks P / R | 66% / 63% | 66% / 63% | 29% / 74% |
+| icLarUrsu right / wrong order / split | 12 / 4 / 33 | 11 / 4 / 33 | 13 / 3 / 43 |
+
+With the X fixed the solver now also cuts the H2_scaffold_2 tip at its 5.10 Mb gap and turns it
+to match its homolog, as the curator asked. Not done: turning a contig to match its homolog in
+general (review 5-6, 10-11), an all-vs-all PAF for mis-phased pieces (12-14: H1_scaffold_40
+belongs in HAP2), keeping cuts out of repetitive shrapnel. New review copies:
+work/review/bAegFun_v2, work/review/qqTroRaco_v2.
+
+Correction (same day): the map's own telomere track (tidk) is not a fallback for telo_scan.
+Every bAegFun scaffold start where it peaks and telo_scan does not (51 of 51) has no
+TTAGGG/CCCTAA in its first 2 kb (most start with a ~190 bp satellite array); the scaffold before
+it in the map ends in ~330 motifs per 2 kb. The peak is that telomere, in the pixel the two
+scaffolds share. `telomere_map` and the fallback are removed again; the H2_scaffold_6 / _7 join
+stays out on the repeat-end guard alone (bAegFun level 0.5: junctions 1/5 / 1/7, breaks 67% /
+67%, no pair crossed). Listings: work/review/bAegFun_v2/telomere_*.txt. The small-vs-all PAF
+already shows the mis-phasing the curator found (H1_scaffold_40 aligns 3.0 Mb to H1_scaffold_33,
+same haplotype); the solver reads only the H2-vs-H1 PAF so far.
+
+All-vs-all alignment of the bird (curator's choice over H2-vs-H1 + small-vs-all): `tools/align_chunked.py
+--no-chunk --secondary --mm-args "-D -N 5 -p 0.5 -K 20M --cap-kalloc 1g"`, the diploid FASTA
+against itself (minimap2 -D skips a sequence's own diagonal only for a query of the target's
+name and length, hence whole sequences). 19 min, minimap2 peak 7.9 GB (watchdog, top: 12.0),
+65,084 alignments: work/bAegFun/all_vs_all.asm5.paf. Across haplotypes 2.40 Gb primary; same
+haplotype, other scaffold 110 Mb primary + 42 Mb secondary; same scaffold off the diagonal
+218 + 111 Mb. Largest same-haplotype scaffold pairs: H1_scaffold_33 / _40 5.15 Mb and
+H1_scaffold_36 / _44 2.59 Mb, the two mis-phasings the curator found by eye; then
+H1_scaffold_31 / _33 1.76 Mb, H1_scaffold_33 / _62 1.35 Mb, and below 1 Mb mostly shrapnel
+against shrapnel. Not used by the solver yet.
+
+All-vs-all in the solver (same day). `--paf` may now be an all-vs-all PAF: `solve` keeps one
+direction of each alignment (`_one_direction`, only when the file has both) and sorts blocks by
+haplotype into across (projections, pairing, as before), within (other scaffolds of the same
+haplotype) and self. An H2-vs-H1 PAF gives the same result as before.
+- `rephase`: a scaffold moves to the other haplotype when its best homolog is a larger scaffold of
+  its own haplotype (>= 300 kb and 30% of it, 2x the second, more than it aligns across), at
+  0.6-1.5x coverage, and < 30% of the partner region it copies has an other-haplotype homolog (it is
+  the missing copy; with one there it is a third copy and stays). On the bird: H1_scaffold_40
+  only (4.69 Mb on H1_scaffold_33, 1% of that region with an H2 homolog), the curator's call.
+  H1_scaffold_44 (on H1_scaffold_36, whose region H2_scaffold_40 covers 100%) is not moved.
+  Row `rephase`; in the review list.
+- no new join between two scaffolds of one haplotype that align >= 300 kb ("two copies of one
+  region in one haplotype").
+- repeats: without a Red track, `copies_track` (>= 3 alignments over a pixel) stands in for it.
+- no cuts inside shrapnel: a YaHS join between two contigs that are mostly repeat is kept as
+  assembled unless an outward telomere (telo_scan) marks a chromosome end there (bAegFun
+  H2_scaffold_30 2.84 Mb, H2_scaffold_31 2.55 Mb are curator cuts of that kind).
+
+bAegFun level 0.5, all-vs-all vs H2-vs-H1: the same scores (junctions 1/5 / 1/7, breaks 67% / 67%,
+no pair crossed) and the same disagreements with the curator; pairs 39 vs 40. After the move,
+H1_scaffold_33 has two H2 homologs of equal weight (H1_scaffold_40 1.74 Mb, H2_scaffold_37 1.61 Mb
+at MAPQ >= 30; 9.5 Mb aligned within itself), so the 2x pairing rule leaves all three unpaired;
+H1_scaffold_40 and H2_scaffold_37 are likely two H2 pieces of one chromosome. Next: pair one path
+with several, and join pieces of one haplotype that tile one homolog. Review copies:
+work/review/bAegFun_v3.

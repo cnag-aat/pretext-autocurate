@@ -185,6 +185,10 @@ def load(pt, args_tracks):
     if "telomere_5p" in got and "telomere_3p" in got:
         t5, t3 = got["telomere_5p"][0], got["telomere_3p"][0]
         pt.graphs["telomere_5p"], pt.graphs["telomere_3p"] = t5, t3
+        # the map's own track is not kept as a fallback: its peaks at scaffold starts are the
+        # previous scaffold's telomere in the pixel the two share (bAegFun: 51 of 51 starts with a
+        # map peak and no telo_scan call have no TTAGGG/CCCTAA in their first 2 kb; the scaffold
+        # before ends in ~330 motifs)
         pt.graphs["telomere"] = t5 + t3
     if "repeat" in got:
         pt.graphs["repeat"] = got["repeat"][0]
