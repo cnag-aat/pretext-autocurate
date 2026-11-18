@@ -26,6 +26,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/chromjoin.py` | chromosome-level joins: pairs merged on specific, spread-out whole-block contact with repeat bins masked (arms apart across centromeric repeats); guards against cuts the pass made and small clustering chromosomes |
 | `allhaps/graphjoin.py` | joins only hifiasm's graph sees, between scaffold ends: `links` (evidence for `merge_pairs`), `place` (the smaller scaffold put at the larger one's end) |
 | `allhaps/selfdup.py` | two copies of one region in a scaffold: `self_duplications` (repeat / duplication / haplotypic by read depth), `apply_cuts` (a haplotypic copy cut out at the gaps around it), `rows` |
+| `allhaps/insert.py` | `insert_cuts`: a loose scaffold (in no pair) that fills a hole in its own haplotype's copy gets that copy cut at a gap where the alignment jumps, so the chain puts it inside; strict (gap within 250 kb of the flanks, little own sequence between them), fires on none of the fixtures yet. Pieces that still belong inside an uncut piece become `insert_candidate` rows (`driver.along`) instead of being joined at an end |
 | `allhaps/small.py` | small scaffolds (`place_small`): unloc, candidate, join, false duplicate |
 | `allhaps/arrange.py` | `arrange_pieces` (order/orientation within a copy), `_project` (the other copy follows the reference), `_contig_conflicts` |
 | `allhaps/driver.py` | `curate_allhaps`: the steps in `STEPS` (`_setup`, `_small`, `_merge`, `_sex_chain`, `_arrange`, `_reference`, `_follow`, `_rows`, `_layout`), each a function of a shared `Run` (`allhaps/state.py`); `stop_after=` returns the state after a step |
@@ -50,6 +51,8 @@ then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags
     ... run --mode allhaps --map MQ0 --map MQ10 --paf H2_vs_H1.paf --small-paf small_vs_all.paf --busco-table H1=... --busco-table H2=...
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
     python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
+    python3 tools/align_chunked.py CURATED.fa.gz DIPLOID.fa diploid_vs_curated.paf -t 4   # 10 Mb chunks, 12 GB watchdog
+    python3 tools/compare_assembly.py MAP diploid_vs_curated.paf [SAVESTATE ...] --list --plot P --dgenies P
 
 Outputs: `<map>.savestate_autocurate`, `autocurate.decisions.tsv` (every action with its
 evidence), `autocurate.agp`. pytest is not installed; tests are unittest.

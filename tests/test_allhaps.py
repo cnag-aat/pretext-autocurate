@@ -513,8 +513,8 @@ class TestAllhapsSequence(unittest.TestCase):
         """The curator's own per-haplotype BUSCO full tables (names not prefixed; hap in the file name)."""
         import glob as _glob
         from pretext_autocurate import busco
-        t1 = _glob.glob(os.path.join(ROOT, "seed", "fixtures", "*hap1*full_table.tsv"))
-        t2 = _glob.glob(os.path.join(ROOT, "seed", "fixtures", "*hap2*full_table.tsv"))
+        t1 = _glob.glob(os.path.join(ROOT, "seed", "fixtures", "bAegFun*hap1*full_table.tsv"))
+        t2 = _glob.glob(os.path.join(ROOT, "seed", "fixtures", "bAegFun*hap2*full_table.tsv"))
         if not (t1 and t2):
             self.skipTest("missing BUSCO tables")
         hits = busco.read_full_tables([f"H1={t1[0]}", f"H2={t2[0]}"])

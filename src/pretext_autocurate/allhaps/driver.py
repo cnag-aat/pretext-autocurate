@@ -10,7 +10,7 @@ from .common import Thresholds, _signal, _union, split_block
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
-from . import chromjoin, graphjoin, selfdup
+from . import chromjoin, graphjoin, insert, selfdup
 from .small import place_small
 from .state import Run
 
@@ -77,6 +77,10 @@ def _setup(run_):
     dups = selfdup.self_duplications(raw, blocks) if blocks is not None and do_cuts else []
     sites = selfdup.apply_cuts(sites, dups)
     graph_rows += selfdup.rows(raw, dups)
+    # loose scaffolds that fill a hole inside their own haplotype's copy: cut it at the gap there
+    if do_cuts:
+        sites, ins_rows = insert.insert_cuts(raw, first_pairs, blocks, hap_regex, sites)
+        graph_rows += ins_rows
     cuts = [(x["q"], x["s"], x["reason"]) for x in sites if x["action"] == "cut"]
     flips = [x["tip"] for x in sites if x["action"] == "invert_tip"]
     pt = SegmentedMap(raw, [q for q, _, _ in cuts])          # from here on, units are cut pieces
@@ -451,7 +455,7 @@ def _reference(run_):
     # Scaffolds that are in no pair but align, over at least half their length, to one copy of
     # a chromosome: they belong in the chain of the other copy (their own haplotype), at the
     # place where they align.
-    loose, false_dup = {}, {}
+    loose, false_dup, inside = {}, {}, {}
     if block_idx is not None:
         ridx = {n: i for i, n in enumerate(raw.names)}
 
@@ -510,6 +514,24 @@ def _reference(run_):
         for i in range(len(base), len(P)):
             if proj[i] is not None and i not in keep:
                 false_dup[extra_u[i - len(base)]] = (copy, covered(proj[i][2]))
+        # A loose scaffold whose stretch lies inside the span of one base piece cannot go where it
+        # aligns without cutting that piece (insert.insert_cuts cuts at a gap there when it can);
+        # put next to an end it would be far from its place (icLarUrsu SUPER_8): it stays out.
+        def extent(segs, q=0.05):
+            """Layout span of the central part (1 - 2q of the aligned length) of the stretches segs."""
+            s = sorted(segs)
+            w = np.array([h - l for l, h in s], dtype=float)
+            if not len(s) or w.sum() <= 0:
+                return None
+            c = np.cumsum(w) / w.sum()
+            return s[int(np.searchsorted(c, q))][0], s[min(int(np.searchsorted(c, 1 - q)), len(s) - 1)][1]
+        spans = [extent(proj[b][2]) for b in range(len(base))]
+        for i in [i for i in keep if i >= len(base)]:
+            e = extent(proj[i][2])
+            hit = next((b for b, sp in enumerate(spans) if e and sp and sp[0] + 2 < e[0] and e[1] < sp[1] - 2), None)
+            if hit is not None:
+                keep.remove(i)
+                inside[extra_u[i - len(base)]] = (copy, P[hit])
         # sorted by position along the other copy, reversed where the alignment runs backwards
         arr = [(i, proj[i][1] < 0) for i in sorted(keep, key=lambda i: proj[i][0])]
         if not p.same_strand and p.kind == "pair":         # the second copy is shown reversed as a whole
@@ -521,7 +543,14 @@ def _reference(run_):
         scaffolds have their own row from place_small)."""
         for v in added.values():
             joined[v] = copy
-            if v not in seen_small:
+            if v in seen_small:
+                # its own row (place_small) may say Hi-C alone left it out; this is sequence evidence
+                for c in small_calls:
+                    if c["u"] == v:
+                        c["join_note"] = (f"but most of it aligns to {pt.names[ref]} (the other haplotype): placed in the "
+                                          f"chain of {pt.names[copy]} where it aligns (sequence alignment; see the "
+                                          "rearrange row)")
+            else:
                 arr_rows.append(dict(action="join", scaffold=pt.names[v], length_mb=round(npx_[v] * pt.bp_per_pix / 1e6, 2),
                                      partner=pt.names[copy], strand="", tag="", score="", next_best="",
                                      evidence=f"in no pair, but most of it aligns to {pt.names[ref]} (the other haplotype): placed in "
@@ -529,7 +558,7 @@ def _reference(run_):
 
     run_.along, run_.conflict_min, run_.contig_min = along, conflict_min, contig_min
     run_.contig_ratio, run_.false_dup, run_.g230, run_.join_rows = contig_ratio, false_dup, g230, join_rows
-    run_.loose, run_.pair_of = loose, pair_of
+    run_.loose, run_.pair_of, run_.inside = loose, pair_of, inside
 
 
 def _follow(run_):
@@ -685,6 +714,16 @@ def _follow(run_):
             c = dict(u=v, copy=copy, action="unloc", third_copy=True, evidence=why, score="", ratio="")
             small_calls.append(c)
             attach.setdefault(copy, []).append(c)
+    # Loose scaffolds whose place is inside one piece of their copy (no gap there to cut at): left
+    # out, with a row saying where they belong.
+    for v, (copy, piece) in run_.inside.items():
+        if v in joined:
+            continue
+        arr_rows.append(dict(action="insert_candidate", scaffold=pt.names[v], length_mb=round(npx_[v] * pt.bp_per_pix / 1e6, 2),
+                             partner=pt.names[copy], strand="", tag="", score="", next_best="",
+                             evidence=f"in no pair; it aligns to the other haplotype inside the stretch that {span(*piece)} "
+                                      f"covers, where {pt.names[copy]} has no sequence of its own: a missing piece of it, "
+                                      "but that piece would have to be cut to put it in (no gap there): not moved"))
     # Pieces that continue a copy beyond one of its ends (see place_small): put next to that end,
     # turned so that the overlapping ends meet.
     for c in small_calls:

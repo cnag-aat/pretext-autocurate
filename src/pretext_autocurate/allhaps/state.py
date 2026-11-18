@@ -8,14 +8,14 @@ steps set them:
                phasing, hap_regex, sex_system, same_hap_blocks, graph_junctions,
                unitig_paths, end_joins, do_cuts, do_place, do_arrange, level
   _setup       sx (sex chromosomes, sexchrom.analyse), sites, cuts, flips, graph_rows (with
-               the selfdup rows), pairs, info, cut_out (gaps a haplotypic copy was cut out at)
+               the selfdup and insert rows), pairs, info, cut_out (gaps a haplotypic copy was cut out at)
   _small       small_calls, attach (unlocs per copy), hap, npx_, start_, sg_arr, soft, tips,
                chain_px, gain_min, attach_link, attach_margin, orient_gain_, mate_of,
                extra_of, arranged, joined, arr_rows, sol, block_idx
   _merge       host_of (member unit -> host unit), members
   _sex_chain   sexfrac, sex_forced, sex_rows, span
   _arrange     (changes arranged, joined, arr_rows in place)
-  _reference   pair_of, along, loose, false_dup, conflict_min, contig_min, contig_ratio,
+  _reference   pair_of, along, loose, false_dup, inside, conflict_min, contig_min, contig_ratio,
                g230, join_rows
   _follow      arr_rows
   _graph_place (changes arranged, joined, attach, small_calls in place; adds to arr_rows;

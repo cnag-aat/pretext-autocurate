@@ -1907,3 +1907,48 @@ not make, with the graph evidence, the Hi-C contact against the best other end, 
 smaller scaffold went. Troglobisium at level 0.5: 15 rows (the tool makes 3 of the 18). Not
 acted on: the curator's verdict on some of them should decide whether graph-unique + Hi-C
 best, or graph alone for pieces under 2 px, is enough to join. Scores unchanged.
+
+## 2026-11-17/18: icLarUrsu against the curated primary; loose pieces inside a copy
+
+When only the curated FASTA is kept (no curator savestate), score by alignment:
+`tools/compare_assembly.py` projects every map pixel onto the curated assembly and reports
+purity, junctions (right; right across sequence the haplotype lacks; unloc placed; wrong
+chromosome; wrong order), curated chromosomes split, missed joins, a dot plot, and D-GENIES
+input (`--dgenies`: a PAF lifted onto each layout plus query/target .idx files; a local
+D-GENIES is in conda env `dgenies`). `tools/align_chunked.py` makes the alignment:
+whole-chromosome `minimap2 -x asm5` on this weevil ran to 73 GB on the 24 GB MacBook (swap on
+a nearly full disk: the earlier kernel panic). With 10 Mb query chunks, `-K 20M --cap-kalloc 1g
+-f 0.002` and a 12 GB watchdog: diploid vs curated 25 min, H2 vs H1 12.5 min, 5.3 GB peak.
+Chunk boundaries split alignments, and a jump can show at a boundary (H2_scaffold_8 at
+30.00 Mb; a whole-chromosome alignment of that pair puts it at 29.65 Mb).
+
+icLarUrsu (weevil, 310 YaHS scaffolds; curated primary 1.74 Gb): as assembled purity 97.0%,
+32 curated chromosome x haplotype split, 67 missed joins. Tool at levels 0 / 0.5 / 1: purity
+98.6 / 98.5 / 98.6%, split 27 / 27 / 23, missed joins 57 / 57 / 50. Most joins first called
+wrong at every level were not: right order across sequence one haplotype lacks (SUPER_4), a
+curated unplaced bit at a scaffold end (H1_scaffold_9 + 111 + 72 on SUPER_5), unlocs placed
+next to their chromosome (SUPER_11, SUPER_22). The scorer now reports these separately.
+
+One real error: H2_scaffold_53 and H2_scaffold_65 fill a hole inside H2_scaffold_8 (SUPER_8
+~30-34 Mb), but the loose-scaffold chain adds only at ends, so both went to its start, 30 Mb
+off. Now a loose piece whose stretch lies inside one uncut piece is left out with an
+`insert_candidate` row. `allhaps/insert.py` cuts at a gap where the alignment jumps over the
+hole so the piece can go in, but only when the gap is within 250 kb of the flanks and the copy
+has little sequence of its own between them. It fires on no fixture yet: bAegFun
+H1_scaffold_5 (gap 0.85 Mb outside overlapping flanks) and H1_scaffold_6 (1.76 Mb of its own
+sequence for a 0.88 Mb hole) were wrong to cut, and icLarUrsu H2_scaffold_8's gap is 1 Mb from
+the jump. Wrong-order joins, levels 0 / 0.25 / 0.5 / 0.75 / 1: 5 / 4 / 6 / 9 / 9 (were
+7 / 7 / 8 / 10 / 10). H2_scaffold_53's row said "not moved" then "joined by end contact"; it is
+placed by sequence alignment (repeat content does not count then) and now says so.
+
+Still wrong at level 0.5: H2_scaffold_99 at the wrong end of H2_scaffold_1 (44 Mb),
+H2_scaffold_103 (curated unplaced) on SUPER_7, H2_scaffold_27 + 32 (overlapping duplicate),
+two on SUPER_18 around H2_scaffold_92, H1_scaffold_12 + 34 (SUPER_13). SUPER_5's first 34 Mb
+disagree between both haplotypes and the curation (H1_scaffold_9's tip inverted;
+H2_scaffold_4 reversed with a nested inversion); the cut at H1_scaffold_9 21.93 Mb follows
+H2_scaffold_4's own misassembly. The graph's "0 gaps between linked contig ends" is real: no
+contig link spans a YaHS gap in this assembly.
+
+A decision map of the whole pass (rules, overrides, every route to each edit, holes) was
+published as an artifact. Among the holes: a mirror cut survives when the hifiasm graph turns
+its source site into a keep (sites.py:289-293 runs before evidence.py).
