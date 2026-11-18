@@ -68,6 +68,8 @@ def main():
     ap.add_argument("--levels", default="0,0.5,1")
     ap.add_argument("--only", nargs="*", help="case names to run (default: all)")
     ap.add_argument("--rerun", action="store_true", help="run the tool again even if its output is there")
+    ap.add_argument("--extra", default="", help="more run arguments for every allhaps case, e.g. '--engine "
+                                                "adjacency' (use a separate --out)")
     a = ap.parse_args()
     F = os.path.abspath(a.fixtures)
     levels = [float(x) for x in a.levels.split(",")]
@@ -87,7 +89,7 @@ def main():
         if a.rerun or not states:
             cmd = [sys.executable, "-m", "pretext_autocurate.cli", "run", *args, "--out-dir", out]
             if case["mode"] != "single":
-                cmd += ["--sweep", ",".join(f"{x:g}" for x in levels)]
+                cmd += ["--sweep", ",".join(f"{x:g}" for x in levels)] + a.extra.split()
             print(f"{case['name']}: running ...", file=sys.stderr)
             t = time.time()
             env = dict(os.environ, PYTHONPATH=os.path.join(R, "src"))

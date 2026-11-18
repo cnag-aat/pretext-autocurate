@@ -75,7 +75,7 @@ def project(pt, paf, min_len=20000):
     return chrom, pos, strand, names, tlen
 
 
-def score(pt, st, proj, near_mb=2.0, min_mb=1.0):
+def score(pt, st, proj, near_mb=2.0, min_mb=1.0, chrom_prefix="SUPER"):
     chrom, pos, strand, names, _ = proj
     ms = MapState(pt).replay(st.edits) if st is not None else MapState(pt)
     paint = dict(st.scaffs) if st is not None else {}
@@ -95,8 +95,17 @@ def score(pt, st, proj, near_mb=2.0, min_mb=1.0):
     pur, tot = 0.0, 0.0
     split = collections.defaultdict(set)
     right, wrong_chr, wrong_ord, joins = 0, 0, 0, []
-    absent, unloc = 0, 0
+    absent, unloc, unplaced = 0, 0, 0
     adj = set()
+    # chromosome-level sequences of the curation (SUPER_N by the ToL convention); the rest are
+    # pieces it left unplaced
+    is_chrom = np.array([n.startswith(chrom_prefix) for n in names])
+    # contigs tagged Unloc in the savestate (they go at the end of a chromosome by convention)
+    unloc_at = set()
+    if st is not None:
+        for i, mask in st.meta_flags:
+            if "Unloc" in st.tag_names(mask) and i < len(ms.contigs):
+                unloc_at.add(ms.contigs[i].start)
     # a curated unloc belongs to its chromosome: SUPER_11_unloc_1 -> SUPER_11
     base = np.array([names.index(n) if n in names else -1 for n in
                      (re.sub(r"_unloc_\d+$", "", n) for n in names)])
@@ -134,11 +143,16 @@ def score(pt, st, proj, near_mb=2.0, min_mb=1.0):
         for c1, c2 in zip(g, g[1:]):
             s1, s2 = int(c1.scaffold), int(c2.scaffold)
             adj.add(frozenset((s1, s2)))
+            if c1.start in unloc_at or c2.start in unloc_at:
+                continue                               # an unloc sits at the chromosome's end by convention
             e1, e2 = side_end(c1, True), side_end(c2, False)
             if s1 == s2 or e1 is None or e2 is None:
                 continue
             (b1, x1, t1), (b2, x2, t2) = e1, e2
-            if b1 != b2:
+            if b1 != b2 and not (is_chrom[b1] and is_chrom[b2]):
+                unplaced += 1                          # the curation left one side unplaced: it says nothing
+                joins.append(("involves sequence the curation left unplaced", s1, s2, names[t1], names[t2]))
+            elif b1 != b2:
                 wrong_chr += 1
                 joins.append(("other chromosome", s1, s2, names[t1], names[t2]))
             elif t1 != t2:
@@ -187,7 +201,7 @@ def score(pt, st, proj, near_mb=2.0, min_mb=1.0):
     missed = sorted(set(missed))
     nsplit = sum(1 for v in split.values() if len(v) > 1)
     return dict(groups=len(groups), purity=pur / max(tot, 1), right=right, wrong_chromosome=wrong_chr, wrong_order=wrong_ord,
-                absent=absent, unloc=unloc,
+                absent=absent, unloc=unloc, unplaced=unplaced,
                 split_chromosomes=nsplit, missed=missed, joins=joins, ms=ms)
 
 
@@ -335,7 +349,7 @@ def main(argv=None):
         r = score(pt, st, proj, a.near_mb, a.min_mb)
         label = os.path.basename(path) if path else "as assembled"
         print(f"{label}: {r['groups']} chromosomes/pieces, purity {100 * r['purity']:.1f}% of bp, junctions right "
-              f"{r['right']} (+{r['absent']} across sequence this haplotype lacks), unloc placed {r['unloc']}, wrong "
+              f"{r['right']} (+{r['absent']} across sequence this haplotype lacks), unloc placed {r['unloc']}, with curated-unplaced {r['unplaced']}, wrong "
               f"chromosome {r['wrong_chromosome']}, wrong order {r['wrong_order']}, curated chromosomes "
               f"split {r['split_chromosomes']}, missed joins {len(r['missed'])}")
         if a.list:

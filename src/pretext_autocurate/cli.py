@@ -399,11 +399,17 @@ def cmd_run(a):
         summary = []
         for lv in levels:
             try:
-                rows, st, info = curate_allhaps(pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks,
-                                                busco_hits=hits, small_blocks=small, level=lv, hap_regex=a.hap_regex,
-                                                same_hap_blocks=same, sex_system=a.sex_system, graph_junctions=gj,
-                                                unitig_paths=ups,
-                                                end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
+                if a.engine == "adjacency":
+                    from .solver import solve
+                    rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex, graph_junctions=gj,
+                                           end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
+                    print("adjacency solver: " + ", ".join(f"{k} {v}" for k, v in info.items()), file=sys.stderr)
+                else:
+                    rows, st, info = curate_allhaps(
+                        pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks, busco_hits=hits,
+                        small_blocks=small, level=lv, hap_regex=a.hap_regex, same_hap_blocks=same,
+                        sex_system=a.sex_system, graph_junctions=gj, unitig_paths=ups,
+                        end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
             except ValueError as e:
                 sys.exit(f"error: {e}")
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
@@ -551,6 +557,9 @@ def main(argv=None):
     p.add_argument("--level", type=float, default=0.5,
                    help="allhaps: how readily to act, 0 (conservative: only the clearest evidence, flag the rest) to 1 "
                         "(aggressive); moves every act-or-flag threshold together [0.5]")
+    p.add_argument("--engine", choices=["rules", "adjacency"], default="rules",
+                   help="allhaps: rules = the step-by-step pass; adjacency = the experimental adjacency solver "
+                        "(contig ends scored and joined best first; solver.py), for comparison [rules]")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
     p.add_argument("--telomere-motif", help="run telo_scan.py (CNAG, bundled) on --fasta for this motif (e.g. TTAGGG for "

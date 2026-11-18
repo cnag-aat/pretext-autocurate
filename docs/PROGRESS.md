@@ -1952,3 +1952,41 @@ contig link spans a YaHS gap in this assembly.
 A decision map of the whole pass (rules, overrides, every route to each edit, holes) was
 published as an artifact. Among the holes: a mirror cut survives when the hifiasm graph turns
 its source site into a keep (sites.py:289-293 runs before evidence.py).
+
+## 2026-11-18: adjacency solver, first version, next to the rules pass
+
+`solver.py`, `run --mode allhaps --engine adjacency` (curator's request, after the decision
+map: one decision, which contig ends sit together, instead of ~75 rules and 13 placement
+routes). Nodes: contigs between gaps and sharp in-contig breaks (`misjoin.detect_misjoins` at
+the level's `sharp_max`, as the rules pass). Contigs under two 8-px bins are merged into their
+neighbour (they cannot be judged by contact, and alone were squeezed out by a join between
+their neighbours). Edge score = yahs prior (2.5 / 1.5 / 0.75 at levels 0 / 0.5 / 1) + 1.5 x
+log2(end contact / 0.25) + 1.5 x log2(contact / next best end, clipped -2..1) + 2 x homology
+(+1 next to each other on the other haplotype, -1 far apart or the wrong way) + 3 graph - 1
+per telomeric end; a hifiasm link at a gap is fixed. Joins on Hi-C alone must be specific
+(2 / 1.5 / 1.25x the next end) and not touch a contig at >= 1.5x coverage. Greedy path cover,
+paths paired by aligned bp, small leftovers to a chromosome by contact (2x the next) or by
+alignment. Runs in 35 s on icLarUrsu (rules pass 2.5 min). Tuning on icLarUrsu found: at MQ0
+each end's strongest contact is the same end of its homolog (1.2-1.85 on the toy), so edges are
+within one haplotype only; misjoins sit at background (0.06-0.08), right joins near 1.
+
+`tools/compare_assembly.py`: junctions with an Unloc-tagged piece are skipped (an unloc goes at
+the chromosome's end by convention), and joins involving sequence the curation left unplaced
+(not SUPER_*) are a note, not "wrong chromosome". `tools/score_all.py --extra` passes more run
+arguments (`--extra "--engine adjacency" --out score_adj`).
+
+| genome, level 0.5 | engine | junctions P / R | breaks P / R | chromosomes >=90% in one |
+|---|---|---|---|---|
+| qqTroRaco vs curator | rules | 30/43 / 34/53 | 86% / 68% | 96% of 128 |
+| | adjacency | 15/20 / 24/53 | 78% / 39% | 88% |
+| bAegFun vs curator | rules | 3/6 / 2/7 | 75% / 67% | 98% of 82 |
+| | adjacency | 0/4 / 1/7 | 100% / 11% | 95% |
+| icLarUrsu vs curated FASTA | rules | right 16, wrong order 6, wrong chr 0 | purity 98.6% | split 29 |
+| | adjacency | right 10, wrong order 1, wrong chr 0 | purity 98.4% | split 33 |
+
+So far the solver is about as precise and finds much less. What it lacks that the rules pass
+uses: the high-MQ map (the bird's breaks: only 26 of its YaHS joins are at gaps), the
+small-against-all alignment and BUSCO for small scaffolds, alignment breaks at gaps (the
+other haplotype's own scaffolding errors make homology near-circular: it backs H1_scaffold_9
+4.39 Mb, a curated misjoin, because H2_scaffold_4 has one too), pairing without alignment,
+false duplicates, sex chromosomes, HAP choice by quality.
