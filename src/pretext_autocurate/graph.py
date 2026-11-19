@@ -1088,7 +1088,14 @@ def close_gaps(agp_path, fa_path, fa_in, layout, graph, report_rows, utg=None, f
             changed[obj] = rows
     if not changed:
         return 0
-    # rebuild the edited objects' sequence from the input assembly; copy the rest
+    rebuild(agp_path, fa_path, fa_in, head, objs, changed, fills)
+    return closed
+
+
+def rebuild(agp_path, fa_path, fa_in, head, objs, changed, fills=None):
+    """Rewrite an output AGP from `objs` and its FASTA: objects in `changed` get their sequence
+    rebuilt from the input assembly (`fa_in`, a Faidx) and `fills`; the others are copied."""
+    fills = fills or {}
     width = 60
     with _open(fa_path) as f:
         for line in f:
@@ -1097,27 +1104,34 @@ def close_gaps(agp_path, fa_path, fa_in, layout, graph, report_rows, utg=None, f
                 break
     tmp_fa, tmp_agp = fa_path + ".tmp", agp_path + ".tmp"
     opener = (lambda p: gzip.open(p, "wt")) if fa_path.endswith(".gz") else (lambda p: open(p, "w"))
+    def emit(fout, name):
+        seq = []
+        for r in changed[name]:
+            if r.kind == "W":
+                s = (fills[r.name][r.beg - 1:r.end] if r.name in fills
+                     else fa_in.fetch(r.name, r.beg - 1, r.end, upper=False))
+                seq.append(s if r.orient == "+" else revcomp(s))
+            else:
+                seq.append("N" * int(r.name))
+        s = "".join(seq)
+        fout.writelines(s[k:k + width] + "\n" for k in range(0, len(s), width))
+    seen = set()
     with _open(fa_path) as fin, opener(tmp_fa) as fout:
         skip = False
         for line in fin:
             if line.startswith(">"):
                 name = line[1:].split()[0]
+                seen.add(name)
                 skip = name in changed
                 fout.write(line)
                 if skip:
-                    seq = []
-                    for r in changed[name]:
-                        if r.kind == "W":
-                            s = (fills[r.name][r.beg - 1:r.end] if r.name in fills
-                                 else fa_in.fetch(r.name, r.beg - 1, r.end, upper=False))
-                            seq.append(s if r.orient == "+" else revcomp(s))
-                        else:
-                            seq.append("N" * int(r.name))
-                    s = "".join(seq)
-                    fout.writelines(s[k:k + width] + "\n" for k in range(0, len(s), width))
+                    emit(fout, name)
             elif not skip:
                 fout.write(line)
+        for name in changed:                 # objects new to this file go at the end
+            if name not in seen:
+                fout.write(f">{name}\n")
+                emit(fout, name)
     write_agp_rows(tmp_agp, head, objs)
     os.replace(tmp_fa, fa_path)
     os.replace(tmp_agp, agp_path)
-    return closed

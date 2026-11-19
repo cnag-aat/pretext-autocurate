@@ -1,16 +1,20 @@
 """Single-haplotype first pass: cuts, joins, haplotig calls, placement -> edits, paint, tags.
 
 Order: misjoin cuts (preferably at gaps) and cuts around haplotig contigs; tentative cuts
-at weak junctions kept only when they enable a rearrangement; joins and orientation of
+at weak junctions kept only when they enable a rearrangement; inversions inside a piece (the
+bow-tie: cut at both ends, rejoined reversed); joins and orientation of
 large pieces; then haplotig calls and placement of small scaffolds on the cut map. The
 result is a target pixel order, turned into a PretextView edit list by `plan_edits`.
 """
+import collections
 from dataclasses import dataclass
 
 import numpy as np
 
 from .haplotig import detect_haplotigs, detect_contig_haplotigs, Params as HapParams
 from .misjoin import detect_misjoins, weak_junctions, Cut
+from .inversion import detect_inversions, Params as InvParams
+from .overlap import gap_overlaps, overlap_evidence, resolve_overlaps
 from .join import find_joins
 from .pretextio import SegmentedMap
 from .savestate import Edit, BREAK_DELTA
@@ -26,8 +30,8 @@ class Decision:
     scaffold: str
     length_px: int
     length_bp: int
-    action: str          # cut | flag_cut | join | flag_join | insert | attach_unloc |
-                         # attach_haplotig | tag_haplotig | none
+    action: str          # cut | flag_cut | join | flag_join | invert | flag_invert | insert |
+                         # attach_unloc | attach_haplotig | tag_haplotig | none
     target: str          # anchor scaffold (for cuts: the cut scaffold; joins: the other one)
     target_bp: int
     strand: str
@@ -35,9 +39,147 @@ class Decision:
     evidence: str
 
 
+def _vt_end_px(vt, u, e):
+    """Original pixel at end e ('h' / 't') of piece u of a SegmentedMap."""
+    return int(vt.scaffold_start[u]) if e == "h" else int(vt.scaffold_start[u] + vt.scaffold_npix[u] - 1)
+
+
+def _find_chain(chains, u):
+    return next((k for k, ch in enumerate(chains) if any(s == u for s, _ in ch)), None)
+
+
+def _unlink(chains, u, end):
+    """Break the chain link at unit u's end ('h' or 't'), if there is one."""
+    k = _find_chain(chains, u)
+    if k is None:
+        return
+    ch = chains[k]
+    i = next(i for i, (s, _) in enumerate(ch) if s == u)
+    right = (end == "t") != ch[i][1]                # does that end face the chain's right?
+    parts = (ch[:i + 1], ch[i + 1:]) if right else (ch[:i], ch[i:])
+    chains[k:k + 1] = [p for p in parts if len(p) > 1]
+
+
+def _link(chains, a, b, a_end="t", b_end="h"):
+    """Join unit a's `a_end` to unit b's `b_end` in `chains` (lists of (unit, reversed)) if
+    both ends are free chain ends; units in no chain count as chains of one. Returns whether
+    it did. The default joins a's tail to b's head."""
+    flip = lambda ch: [(s, not r) for s, r in reversed(ch)]
+    ka, kb = _find_chain(chains, a), _find_chain(chains, b)
+    if ka is not None and ka == kb:                 # already in one chain
+        return False
+    ca = chains[ka] if ka is not None else [(a, a_end == "h")]
+    cb = chains[kb] if kb is not None else [(b, b_end == "t")]
+    # a's end last in its chain (facing right), b's end first (facing left)
+    ra, rb = a_end == "h", b_end == "t"
+    ca = ca if ca[-1] == (a, ra) else flip(ca) if ca[0] == (a, not ra) else None
+    cb = cb if cb[0] == (b, rb) else flip(cb) if cb[-1] == (b, not rb) else None
+    if ca is None or cb is None:                    # an end is joined already
+        return False
+    for k in sorted((k for k in (ka, kb) if k is not None), reverse=True):
+        chains.pop(k)
+    chains.append(ca + cb)
+    return True
+
+
+def small_scaffold_haplotigs(raw, cut_after, hap_params=None, min_px=8, big_px=400, cov_ok=0.8):
+    """Cuts that take a haplotig contig off the end of a small scaffold.
+
+    `detect_contig_haplotigs` looks only inside scaffolds over `big_px`; a smaller scaffold is
+    judged whole, so one whose end contig is a haplotig and the rest not averages the two
+    (xgTylRafi scaffold_30: contigs at 1.08 / 0.91 / 0.68 coverage, called a borderline
+    haplotig as a whole; the curator cut at the gap, placed the rest and tagged the last
+    contig Haplotig). Here each scaffold of up to `big_px` with gaps is split at them on trial
+    and its contigs called one by one: a run of contigs at one end, together at least `min_px`
+    and each called haplotig (line and low coverage), is cut off at its gap when the rest has
+    no such call and coverage of at least `cov_ok`. Returns (cuts, haplotig piece pixel ranges).
+    """
+    gap = raw.graphs.get("gap")
+    if gap is None:
+        return [], []
+    cand = {}
+    for s in np.nonzero((raw.scaffold_npix <= big_px) & (raw.scaffold_npix >= 2 * min_px))[0]:
+        a, L = int(raw.scaffold_start[s]), int(raw.scaffold_npix[s])
+        g = [a + int(x) for x in np.nonzero(gap[a:a + L - 1] > 0)[0]]       # cut after a gap pixel
+        if g and not any(a <= q < a + L - 1 for q in cut_after):
+            cand[int(s)] = g
+    if not cand:
+        return [], []
+    vt = SegmentedMap(raw, list(cut_after) + [q for g in cand.values() for q in g])
+    sg = Signal(vt)
+    cov = sg.coverage_ratio()
+    if cov is None:
+        return [], []
+    calls = {c.start_px: c for c in detect_haplotigs(vt, hap_params or HapParams(), sg)}
+    cuts, pieces = [], []
+    for s, g in cand.items():
+        a, L = int(raw.scaffold_start[s]), int(raw.scaffold_npix[s])
+        bounds = [a] + [q + 1 for q in g] + [a + L]
+        parts = [(lo, hi) for lo, hi in zip(bounds, bounds[1:]) if hi > lo]       # [lo, hi)
+        hap = [calls.get(lo) is not None and calls[lo].call in ("haplotig_high", "haplotig_medium")
+               for lo, _ in parts]
+        for run in (list(range(len(parts))), list(range(len(parts) - 1, -1, -1))):   # from either end
+            k = 0
+            while k < len(run) and hap[run[k]]:
+                k += 1
+            if not 0 < k < len(parts):
+                continue
+            hp, rest = [parts[i] for i in run[:k]], [parts[i] for i in run[k:]]
+            lo, hi = min(x for x, _ in hp), max(y for _, y in hp)
+            r0, r1 = min(x for x, _ in rest), max(y for _, y in rest)
+            rc = float(np.median(cov[r0:r1]))
+            if hi - lo < min_px or any(hap[i] for i in run[k:]) or rc < cov_ok:
+                continue
+            c = calls[hp[0][0]]
+            q = hi - 1 if lo == a else lo - 1            # cut after this pixel
+            cuts.append(Cut(raw.names[s], q, int(round((raw.rel_coord[q] + 1) * raw.bp_per_pix)), True,
+                            float("nan"), float("nan"), True,
+                            f"small scaffold: the contig{'s' if k > 1 else ''} at its "
+                            f"{'start' if lo == a else 'end'} ({hi - lo} px) "
+                            f"{'are haplotigs' if k > 1 else 'is a haplotig'} (line {c.line_over_own:.2f} at "
+                            f"{c.partner}, coverage {float(np.median(cov[lo:hi])):.2f}, partner coverage "
+                            f"{c.partner_cov:.2f}), the rest not (coverage {rc:.2f}): cut at the gap"))
+            pieces.append((lo, hi))
+            break
+    return cuts, pieces
+
+
+# Level-dependent thresholds of the single-haplotype rules pass: name -> (value at level 0, 0.5,
+# 1, meaning), read through allhaps' `Level` like the allhaps table. Curator, 2026-11-19: 1.2 is an
+# acceptable orientation ratio (scaffold_119 into scaffold_13 at 11.04 Mb, '+', 1.26); more
+# examples will tune these.
+SINGLE_THRESHOLDS = {
+    "orient_strict": (1.3, 1.2, 1.15, "orientation ratio to propose an insertion with a waypoint at the gap"),
+    "insert_orient": (1.4, 1.2, 1.15, "orientation ratio to apply an insertion"),
+    "insert_min_px": (20, 15, 8, "smallest piece (px) whose insertion is applied, not only proposed"),
+    # Inversions (inversion.py): weaker calls are proposed with waypoints. Over four curated
+    # genomes only icLarUrsu scaffold_13 (gain 1.25, drop 0.29) passes 1.0 / 0.3; at 0.8 / 0.4
+    # bAegFun H2_scaffold_8 (1.08 / 0.32, not curated) does too. Half bow-ties at scaffold ends
+    # were right about half the time (folding at chromosome ends looks the same): applied at level 1 only.
+    "inv_gain": (1.2, 1.0, 0.8, "inversion with both junctions: reversed corners (1 = adjacent) needed to apply"),
+    "inv_drop": (0.2, 0.3, 0.4, "inversion with both junctions: assembled corners at most this to apply"),
+    "inv_end_gain": (9.9, 9.9, 1.0, "inversion at a scaffold end (half a bow-tie): reversed corner needed to apply"),
+}
+
+
+def single_thresholds(level=0.5):
+    """{name: value} of SINGLE_THRESHOLDS at `level` (insert_min_px rounded to whole pixels)."""
+    from .allhaps.common import Level
+    lv = Level(level)
+    out = {k: lv.at(c, d, a) for k, (c, d, a, _) in SINGLE_THRESHOLDS.items()}
+    out["insert_min_px"] = int(round(out["insert_min_px"]))
+    return out
+
+
 def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_low=0.8,
-                  orient_strict=1.3, apply_inserts=False, do_cuts=True, do_joins=True, insert_min_px=15, insert_orient=1.3):
-    """Returns (decisions, savestate). The savestate holds edits, paint, tags, waypoints.
+                  orient_strict=None, apply_inserts=False, do_cuts=True, do_joins=True, insert_min_px=None,
+                  insert_orient=None, level=0.5, fasta=None, threads=4, minimap2=None):
+    """Returns (decisions, savestate). The savestate holds edits, paint, tags, waypoints, and
+    `st.exact_breaks`: cuts and gapless joins placed to the base by the sequence (rows for
+    `breaks.write`; not part of the savestate file).
+
+    `fasta`: the assembly; contig-end overlaps (overlap.py) are applied only when its sequence
+    confirms them (minimap2 from `minimap2` or PATH / the conda env), otherwise proposed.
 
     Waypoints mark positions inside contigs only (cuts, flagged cuts, proposed insertion
     loci). Standalone pieces that need a look (borderline haplotigs) carry the `vertPaint`
@@ -52,7 +194,13 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
     `unloc_min_px`: smaller unlocalised pieces are left alone; `cov_low`: coverage ratio
     below which a piece is not inserted (possible haplotig); `orient_strict`: orientation
     ratio needed to consider an insertion at all. `do_cuts` / `do_joins` switch off stages.
+    `level` (0 conservative .. 1 aggressive) sets `orient_strict`, `insert_orient` and
+    `insert_min_px` from SINGLE_THRESHOLDS unless they are given.
     """
+    th = single_thresholds(level)
+    orient_strict = th["orient_strict"] if orient_strict is None else orient_strict
+    insert_orient = th["insert_orient"] if insert_orient is None else insert_orient
+    insert_min_px = th["insert_min_px"] if insert_min_px is None else insert_min_px
     raw = pt
     sg_raw = Signal(raw)
     cuts = detect_misjoins(raw, signal=sg_raw) if do_cuts else []
@@ -66,6 +214,10 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                 float("nan"), float("nan"), True,
                                 f"end of a haplotig contig: copy of sequence {abs(h.offset_px)} px away, "
                                 f"coverage {h.cov:.2f}, partner coverage {h.partner_cov:.2f}, line {h.line:.2f}"))
+    small_haps = []
+    if do_cuts:
+        sc, small_haps = small_scaffold_haplotigs(raw, [c.after_px for c in cuts if c.apply], hap_params)
+        cuts += sc
     # Rearrangements inside a piece: cut tentatively at weak junctions (gaps), and keep a
     # cut only if a piece then fits better somewhere else or the other way round.
     jc = sg_raw.insulation(10, 0)       # contact across every boundary of the original map
@@ -108,19 +260,125 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                             int(round((raw.rel_coord[q] + 1) * raw.bp_per_pix)), True, nv, fv, ok,
                             "weak junction; a piece next to it fits better elsewhere or reversed" if ok else
                             "weak junction, but the pieces fit best as assembled (possible insertion site): not cut"))
+    # Inversions inside the pieces made so far (a segment crossing a cut is no inversion). An
+    # applied one is cut at both ends (left_q / right_q: cut after; None at a scaffold end) and
+    # rejoined reversed after the joins; weaker ones are proposed with waypoints.
+    inversions = []                     # (Inversion, apply, left_q, right_q)
+    if do_cuts and do_joins:
+        vt = SegmentedMap(raw, sorted(c.after_px for c in cuts if c.apply))
+        gap = raw.graphs.get("gap")
+        so = raw.orig_scaffold
+
+        def snap(q):                    # to a gap within 5 px of the same scaffold, if any
+            if gap is None:
+                return q, False
+            near = [x for x in range(q - 5, q + 6) if 0 <= x < raw.npix - 1 and gap[x] > 0 and so[x] == so[q]
+                    and so[x + 1] == so[q]]
+            return (min(near, key=lambda x: abs(x - q)), True) if near else (q, False)
+        for v in detect_inversions(vt, InvParams()):
+            end = v.at_start or v.at_end
+            apply = v.gain >= th["inv_end_gain"] if end else (v.gain >= th["inv_gain"] and v.drop <= th["inv_drop"])
+            lq = None if v.start_px == 0 or vt.orig_scaffold[v.start_px - 1] != vt.orig_scaffold[v.start_px] \
+                else v.start_px - 1
+            rq = None if v.end_px + 1 >= raw.npix or vt.orig_scaffold[v.end_px + 1] != vt.orig_scaffold[v.end_px] \
+                else v.end_px
+            gaps = []
+            if lq is not None:
+                lq, g = snap(lq)
+                gaps.append(g)
+            if rq is not None:
+                rq, g = snap(rq)
+                gaps.append(g)
+            inversions.append((v, apply, lq, rq))
+            if apply:
+                a_, b_ = (lq + 1 if lq is not None else v.start_px), (rq if rq is not None else v.end_px)
+                span = "%.2f-%.2f Mb" % (raw.rel_coord[a_] * raw.bp_per_pix / 1e6, (raw.rel_coord[b_] + 1) * raw.bp_per_pix / 1e6)
+                for q, g in zip([x for x in (lq, rq) if x is not None], gaps):
+                    cuts.append(Cut(raw.names[int(so[q])], q, int(round((raw.rel_coord[q] + 1) * raw.bp_per_pix)), g,
+                                    float("nan"), float("nan"), True,
+                                    f"end of an inversion ({span} reversed; see the invert row)"))
+    # Contig-end overlaps (overlap.py): one piece's end is the other haplotype of another's end.
+    # The copy on the longer piece is cut off (the curator, icLarUrsu scaffold_16 and 14) at the
+    # base where the sequence says it stops, tagged Haplotig, and the other piece's end is joined
+    # to the cut. Applied only when the sequence confirms it; otherwise proposed.
+    overlaps = []                       # dicts (overlap.resolve_overlaps)
+    exact = []                          # rows for breaks.write
+    if do_cuts and do_joins:
+        vt = SegmentedMap(raw, sorted(c.after_px for c in cuts if c.apply))
+        overlaps = resolve_overlaps(raw, vt, fasta, minimap2, threads)
+        gp = raw.graphs.get("gap")
+        for rec in overlaps:
+            if rec["apply"]:
+                ts, ks, q = rec["tside"], rec["kside"], rec["q"]
+                cuts.append(Cut(ts.name, q, rec["cut_bp"], bool(gp is not None and gp[q] > 0), float("nan"), float("nan"),
+                                True, f"end of a haplotypic copy of {ks.name} {'start' if ks.head else 'end'}, "
+                                      f"placed by the sequence at {rec['cut_bp']:,} bp (see the overlap row)"))
+                exact += rec["exact"]
+    # Gaps whose two sides are haplotypic copies of each other (sequence only; nothing changes on
+    # the map): the gap is closed in the output where the copies are identical (a switch row for
+    # asm), the other copy of each side becoming a haplotig. icLarUrsu scaffold_11 at 54.11 Mb:
+    # 849 kb on both sides at 0.77% divergence, both kept in the curated assembly.
+    gap_rows = []
+    if fasta and do_cuts and raw.graphs.get("gap") is not None:
+        gap_rows = gap_overlaps(raw, fasta, minimap2, threads)
+        exact += [r["switch"] for r in gap_rows if r["switch"]]
     cuts.sort(key=lambda c: c.after_px)
     # from here on every applied cut is a scaffold end: pieces are "scaffolds" of pt
     pt = SegmentedMap(raw, [c.after_px for c in cuts if c.apply])
     forced = {pt.names[int(pt.orig_scaffold[h.start_px])] for h in contig_haps}   # haplotigs
+    forced |= {pt.names[int(pt.orig_scaffold[lo])] for lo, _ in small_haps}
     joins, chains = find_joins(pt, sg_raw) if do_joins else ([], [])
+    # Applied inversions: segment B between pieces A and C goes back reversed (A's tail to B's
+    # tail, B's head to C's head). Those ends are the inversion's: a join that took one of them
+    # is dropped to a flag. A, B and C stay out of placement.
+    inv_units, inv_rows = set(), []
+    for v, apply, lq, rq in inversions:
+        if not apply:
+            continue
+        B = int(pt.orig_scaffold[lq + 1 if lq is not None else v.start_px])
+        A = int(pt.orig_scaffold[lq]) if lq is not None else None
+        C = int(pt.orig_scaffold[rq + 1]) if rq is not None else None
+        own = {(A, "t"), (B, "h"), (B, "t"), (C, "h")} - {(None, "t"), (None, "h")}
+        for u, e in own:
+            _unlink(chains, u, e)
+        for j in joins:
+            if j.accepted and ((j.a, j.a_end) in own or (j.b, j.b_end) in own):
+                j.accepted, j.reason = False, j.reason + "; an end of an inversion, rejoined there instead"
+        ok = (A is None or _link(chains, A, B, "t", "t")) and (C is None or _link(chains, B, C, "h", "h"))
+        inv_units |= {u for u in (A, B, C) if u is not None}
+        inv_rows.append((v, ok))
+    # Applied overlaps: the copy piece leaves (Haplotig of the other piece), whose end is joined
+    # to the cut; joins that took those ends become flags.
+    ov_haps = {}                        # copy piece -> (kept piece, overlap record)
+    for rec in overlaps:
+        if not rec["apply"]:
+            continue
+        q, ts, ks = rec["q"], rec["tside"], rec["kside"]
+        Cp = int(pt.orig_scaffold[q if ts.head else q + 1])          # the copy
+        R = int(pt.orig_scaffold[q + 1 if ts.head else q])            # the rest of that scaffold
+        eR = "h" if ts.head else "t"
+        kp, ke = rec["keep"]
+        K = int(pt.orig_scaffold[_vt_end_px(vt, kp, ke)])
+        own = {(K, ke), (R, eR), (Cp, "h"), (Cp, "t")}
+        for u, e in own:
+            _unlink(chains, u, e)
+        made = {(K, ke), (R, eR)}
+        for j in joins:
+            if {(j.a, j.a_end), (j.b, j.b_end)} == made:
+                j.accepted, j.reason = True, j.reason + "; made: the two sides of a haplotypic overlap (see the overlap row)"
+            elif j.accepted and ((j.a, j.a_end) in own or (j.b, j.b_end) in own):
+                j.accepted, j.reason = False, j.reason + "; an end of a haplotypic overlap, joined past the copy instead"
+        rec["linked"] = _link(chains, K, R, ke, eR)
+        rec["units"] = (Cp, R, K)
+        inv_units |= {Cp, R, K}
+        ov_haps[Cp] = (K, rec)
     sg = Signal(pt)                     # new Signal: decay and insulation respect the cuts
     haps = {c.scaffold: c for c in detect_haplotigs(pt, hap_params or HapParams(), sg)}
-    places = {p.scaffold: p for p in place_scaffolds(pt, place_params or PlaceParams(), sg, junction_contact=jc)}
-    # one insertion per junction: the piece with the clearest orientation keeps it
-    best_at = {}
-    for p_ in places.values():
-        if p_.call == "localised" and (p_.after_px not in best_at or p_.orient > best_at[p_.after_px].orient):
-            best_at[p_.after_px] = p_
+    places = {p.scaffold: p for p in place_scaffolds(pt, place_params or PlaceParams(), sg, junction_contact=jc)
+              if pt.names.index(p.scaffold) not in inv_units}
+    # Several pieces may go into one junction (xgTylRafi scaffold_3 at 22.97 Mb: the curator put
+    # scaffold_3 46.65-47.17 and part of scaffold_30 there, side by side); each must be clear on
+    # its own, and they are ordered by their contact with the two sides (see `left_share`).
     idx = {n: i for i, n in enumerate(pt.names)}
 
     possible = []        # scaffold indices flagged as borderline haplotigs (vertPaint tag only)
@@ -133,6 +391,63 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                    if c.near == c.near else "") +     # NaN: haplotig-contig cut
                                   f"{'at gap' if c.at_gap else 'no gap'}; {c.reason}"))
     proposals = [c.after_px for c in cuts if not c.apply]   # waypoints at flagged cuts too
+    linked = {id(v): ok for v, ok in inv_rows}
+    for v, apply, lq, rq in inversions:
+        a_, b_ = (lq + 1 if lq is not None else v.start_px), (rq if rq is not None else v.end_px)
+        bp0, bp1 = int(round(raw.rel_coord[a_] * raw.bp_per_pix)), int(round((raw.rel_coord[b_] + 1) * raw.bp_per_pix))
+        done = apply and linked.get(id(v), False)
+        one = v.at_start or v.at_end
+        ev = (f"{bp0 / 1e6:.2f}-{bp1 / 1e6:.2f} Mb reversed: contact across the reversed junctions "
+              f"{v.gain:.2f}, across the assembled ones {v.drop:.2f} (1 = adjacent sequence, 0 = what sequence "
+              f"{(bp1 - bp0) / 1e6:.1f} Mb apart shows, {v.expected:.2f} of adjacent here)" +
+              ("; at a scaffold end: half a bow-tie, one junction" if one else "; bow-tie at both ends"))
+        if apply and not done:
+            ev += "; cut at its ends, but an end was already joined elsewhere: not rejoined reversed"
+        elif not apply:
+            ev += "; proposed (waypoints at its ends), not applied at this level"
+            proposals += [q for q in (lq, rq) if q is not None] + ([v.start_px] if v.at_start else []) + \
+                ([v.end_px] if v.at_end else [])
+        name = raw.names[int(raw.orig_scaffold[a_])]
+        decisions.append(Decision(name, b_ - a_ + 1, bp1 - bp0, "invert" if done else "flag_invert", name, bp0, "-",
+                                  "high" if done and not one else "medium" if done else "low", ev))
+    for rec in overlaps:
+        o, ts, ks, al = rec["ov"], rec["tside"], rec["kside"], rec["al"]
+        wh = lambda sd: f"{sd.name} {'start' if sd.head else 'end'}"
+        ev = overlap_evidence(rec, raw.bp_per_pix)
+        if rec["apply"] and rec.get("linked", False):
+            ev += f"; cut at {rec['cut_bp']:,} bp, the copy tagged Haplotig, {wh(ks)} joined to the rest"
+            act, conf = "overlap", "high"
+        else:
+            ev += "; " + (rec["why"] or "applied cut, but an end was already joined elsewhere: not joined")
+            act, conf = "flag_overlap", "low"
+            u, e = rec["trim"]
+            p = _vt_end_px(vt, u, e)
+            proposals.append(p + o.overlap_px - 1 if e == "h" else p - o.overlap_px + 1)
+        decisions.append(Decision(ts.name, o.overlap_px, int(al.copy_bp if al is not None else o.overlap_px * raw.bp_per_pix),
+                                  act, ks.name, int(rec["cut_bp"] or ts.edge), "", conf, ev))
+    for g in gap_rows:
+        al = g["al"]
+        if al is None or al.copy_bp < 10_000:
+            continue                    # nothing like a copy: no row
+        ev = (f"gap at {g['gap'][0] + 1:,} bp: the {al.copy_bp / 1e3:.0f} kb after it aligns in order with the sequence "
+              f"before it ({al.aligned_bp / 1e3:.0f} kb aligned, {al.divergence:.2%} divergence, reaching "
+              f"{al.keep_reach_bp / 1e3:.0f} kb from the gap)")
+        if g["ok"]:
+            decisions.append(Decision(g["scaffold"], 0, al.copy_bp, "close_gap", g["scaffold"], g["gap"][0] + 1, "",
+                                      "high", ev + f"; asm closes it where {al.match_bp:,} bases are identical "
+                                      f"({g['scaffold']} to {al.keep_switch + 1:,}, then from {al.trim_switch + 2:,}); the "
+                                      f"other copy of each side becomes a haplotig"))
+        elif al.aligned_bp >= 0.5 * al.copy_bp and al.divergence <= 0.05:
+            decisions.append(Decision(g["scaffold"], 0, al.copy_bp, "gap_copy", g["scaffold"], g["gap"][0] + 1, "",
+                                      "", ev + "; not closed: the copy stops short of the gap or has no identical "
+                                                  "stretch to switch at"))
+    for row in exact:
+        if row.get("src") == "gap":
+            row["applied"] = True
+        else:
+            row["applied"] = any(r["apply"] and r.get("linked", False) and r["tside"].name in (row["scaffold"], row["partner"])
+                                 for r in overlaps)
+    st_exact = [{k: v for k, v in r.items() if k not in ("applied", "src")} for r in exact if r["applied"]]
     # "<scaffold> start|end (x Mb)" for a piece end, in original scaffold coordinates
     endname = lambda u, e: "%s %s (%.2f Mb)" % (pt.parent_of(pt.names[u])[0], "start" if e == "h" else "end", (
         pt.parent_of(pt.names[u])[1] + (0 if e == "h" else pt.scaffold_npix[u])) * pt.bp_per_pix / 1e6)
@@ -148,6 +463,13 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
             for u, e in ((j.a, j.a_end), (j.b, j.b_end)):
                 proposals.append(int(pt.scaffold_start[u] + (0 if e == "h" else pt.scaffold_npix[u] - 1)))
     n_cut_rows = len(decisions)
+    for Cp, (K, rec) in ov_haps.items():         # the copies cut off by applied overlaps
+        if not rec.get("linked", False):
+            continue
+        moved[Cp] = ("Haplotig", K, -1, "+")
+        decisions.append(Decision(pt.names[Cp], int(pt.scaffold_npix[Cp]), 0, "attach_haplotig", pt.names[K], 0, "",
+                                  "high", f"haplotypic copy of the end of {rec['kside'].name}, cut off by the sequence "
+                                          f"(see the overlap row)"))
     for name, pl in places.items():
         h = haps.get(name)
         is_hap = (h is not None and h.call in ("haplotig_high", "haplotig_medium")) or name in forced
@@ -181,7 +503,7 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                      int(pt.scaffold_start[A] + pt.scaffold_npix[A]) - 1)
             # extending a chromosome end is left to the curator: as an unloc it lands there anyway
             clear = (pl.length_px >= insert_min_px and pl.orient >= insert_orient
-                     and best_at.get(pl.after_px) is pl and not at_end)
+                     and not at_end)
             if apply_inserts or clear:
                 moved[idx[name]] = ("", A, pl.after_px, pl.strand)
                 decisions.append(Decision(**row, action="insert", confidence="high" if clear else "medium",
@@ -191,6 +513,17 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                 proposals.append(pl.after_px)
                 decisions.append(Decision(**row, action="attach_unloc", confidence="medium",
                                           evidence=ev + "; proposed insertion at target (waypoint), not applied"))
+        elif pl.call == "localised" and not pl.cov < cov_low:
+            # placed at a gap, but the orientation is short of orient_strict: say where and which
+            # way, and mark the gap (xgTylRafi scaffold_119 at scaffold_13 11.04 Mb, '+' at 1.26)
+            moved[idx[name]] = ("Unloc", A, -1, "+")
+            proposals.append(pl.after_px)
+            row["strand"] = pl.strand
+            row["target_bp"] = int(round((pt.rel_coord[pl.after_px] + 1) * pt.bp_per_pix))   # the gap
+            decisions.append(Decision(**row, action="attach_unloc", confidence="medium",
+                                      evidence=ev + f"; localised at a gap, strand {pl.strand} but orientation ratio "
+                                      f"{pl.orient:.2f} (below {orient_strict}): proposed insertion at target "
+                                      f"(waypoint), not applied"))
         elif pl.length_px >= unloc_min_px:
             why = pl.reason or ("low coverage: possible haplotig" if pl.cov < cov_low else "orientation weak")
             moved[idx[name]] = ("Unloc", A, -1, "+")
@@ -247,11 +580,22 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
 
     tags = {"": 0, "Unloc": 1, "Haplotig": 2}
 
+    def left_share(q, t, w=20):
+        """Share of piece t's contact with the junction's left side (w px up to pixel q) over
+        both sides: of pieces inserted at one junction, the most left-leaning goes first."""
+        a, b = int(start[t]), int(start[t] + npx[t] - 1)
+        left = float(sg.block(a, b, q - w + 1, q).mean())
+        right = float(sg.block(a, b, q + 1, q + w).mean())
+        return left / (left + right) if left + right > 0 else 0.5
+
     def unit_segments(s):
         """Forward pieces of a unit with its insertions: list of (pixels, is_inserted)."""
         a0, a1 = int(start[s]), int(start[s] + npx[s] - 1)
         segs, pos = [], a0
-        for q, t, kind, strand in sorted(inserts.get(s, [])):
+        ins = inserts.get(s, [])
+        at = collections.Counter(q for q, *_ in ins)
+        order = lambda x: (x[0], -left_share(x[0], x[1]) if at[x[0]] > 1 else 0, x[1])
+        for q, t, kind, strand in sorted(ins, key=order):
             if q >= pos:
                 segs.append((np.arange(pos, q + 1), False))
                 pos = q + 1
@@ -260,6 +604,20 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
             segs.append((np.arange(pos, a1 + 1), False))
         return segs
 
+    # Taking a haplotig contig out of a scaffold must not split the chromosome: when no join
+    # claimed either flank's free end, the flanks stay together as assembled (xgTylRafi
+    # scaffold_13 became two chromosomes when the flanks' best ends tied).
+    for h in contig_haps if do_joins else []:
+        L, R = int(pt.orig_scaffold[max(h.start_px - 1, 0)]), int(pt.orig_scaffold[min(h.end_px + 1, pt.npix - 1)])
+        if h.start_px == 0 or h.end_px + 1 >= pt.npix or L in moved or R in moved or L == R \
+                or raw.orig_scaffold[h.start_px - 1] != raw.orig_scaffold[h.end_px + 1]:
+            continue
+        if _link(chains, L, R):
+            decisions.append(Decision(pt.parent_of(pt.names[L])[0], int(npx[L]), 0, "join",
+                                      pt.parent_of(pt.names[R])[0], int(round(pt.parent_of(pt.names[R])[1] * pt.bp_per_pix)),
+                                      "", "medium",
+                                      f"{endname(L, 't')} with {endname(R, 'h')}: flanks of the haplotig contig "
+                                      f"cut out between them, kept together as assembled (no clearer join for either end)"))
     in_chain = {s for ch in chains for s, _ in ch}
     # output scaffolds: joined chains plus every other piece alone, in original map order
     groups = [ch for ch in chains] + [[(int(s), False)] for s in np.argsort(start)
@@ -315,6 +673,7 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
     for k, m in enumerate(sorted(marks)[:255]):     # waypoint count and ids are u8
         x = m / pt.npix - 0.5                       # on the diagonal (FORMATS.md)
         st.waypoints.append(Waypoint(x, x, 30.0, k))
+    st.exact_breaks = st_exact
     return decisions, st
 
 

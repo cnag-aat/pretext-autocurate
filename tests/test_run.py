@@ -105,7 +105,9 @@ class TestRun(unittest.TestCase):
         n_low = sum("POSSIBLE HAPLOTIG" in d.evidence for d in self.dec)
         self.assertGreater(n_low, 20)
         self.assertEqual(sum(bool(m & vert) for _, m in self.st.meta_flags), n_low)
-        self.assertLess(len(self.st.waypoints), 90)       # cuts, weak junctions, flagged joins, proposed insertions only
+        # cuts, weak junctions, flagged joins, proposed insertions and overlaps only (2026-11-19: two
+        # proposed overlaps at cuts in scaffold_2 and 3, without --fasta here, made it 91)
+        self.assertLess(len(self.st.waypoints), 95)
 
     def test_contaminant_left_alone(self):
         d = {x.scaffold: x for x in self.dec}["scaffold_18"]
@@ -129,6 +131,27 @@ class TestRun(unittest.TestCase):
         for d in applied:
             px = self.pt.scaffold_start[self.pt.names.index(d.scaffold)] + d.target_bp / self.pt.bp_per_pix
             self.assertLessEqual(np.abs(curated - px).min(), 12, d)
+
+    def test_review_fixes_2026_11_19(self):
+        """Curator review of xgTylRafi: scaffold_13 stays one chromosome after its haplotig contig
+        is cut out; scaffold_30 loses its haplotig end contig at the gap, and its first part goes
+        into scaffold_3 at 22.97 Mb after the reversed 46.65-47.17 Mb piece, as curated."""
+        ms = MapState(self.pt).replay(self.st.edits)
+        paint = dict(self.st.scaffs)
+        chrom = np.zeros(self.pt.npix, dtype=int)
+        pos = np.empty(self.pt.npix, dtype=int)
+        pos[ms.pix] = np.arange(self.pt.npix)
+        for i, c in enumerate(ms.contigs):
+            chrom[ms.pix[c.start:c.start + c.length]] = paint.get(i, 0)
+        px = lambda s, mb: int(self.pt.scaffold_start[self.pt.names.index(s)] + mb * 1e6 / self.pt.bp_per_pix)
+        self.assertEqual(chrom[px("scaffold_13", 5)], chrom[px("scaffold_13", 40)])
+        self.assertGreater(chrom[px("scaffold_13", 5)], 0)
+        cut = [d for d in self.dec if d.scaffold == "scaffold_30" and d.action == "cut"]
+        self.assertEqual(len(cut), 1)
+        self.assertTrue(any(d.scaffold == "scaffold_30" and d.action in ("attach_haplotig", "tag_haplotig")
+                            for d in self.dec))
+        a, b, c = pos[px("scaffold_3", 46.8)], pos[px("scaffold_30", 0.2)], pos[px("scaffold_3", 23.5)]
+        self.assertTrue(a < b < c and c - a < 60)
 
     def test_only_clear_insertions_by_default(self):
         ins = [d for d in self.dec if d.action == "insert"]

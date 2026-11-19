@@ -2256,3 +2256,186 @@ repeats and copies. `score_all.py --extra "--engine adjacency"` sweeps single ca
 HAP tags in single mode: neither engine writes them (nor does the curator). The AGP no longer tags
 sub-pixel scaffolds HAP by prefix in single mode (they alone would form a HAP1 assembly next to the
 name-prefixed rest); `asm` tags them only if the savestate uses HAP tags.
+
+Review of the xgTylRafi rules pass (2026-11-19). Of the 38 missed breaks and 27 missed joins, about
+half are small scaffolds the curator put in line at YaHS gaps; the rules pass had them as Unlocs of
+the right chromosome, mostly within a few px of that gap. Most of those (11 of 16) had no clear
+orientation, and the curator's own default for a placed but unorientable (often repeat) piece is
+Unloc: not misses. The curator is inconsistent on such pieces (16 in line, 16 Unloc with the same
+evidence). Changes to the rules pass:
+- Taking a haplotig contig out of a scaffold no longer splits the chromosome: when no join claims
+  either flank's free end, the flanks stay together as assembled (scaffold_13 had become two).
+- A telomere at a cut counts for one side only, by strand (5p: the head of the piece after it; 3p:
+  the tail before it). Original scaffold ends keep the strand-free check, which also stops
+  subtelomeric end-to-end joins (scaffold_11 end with scaffold_16 end, contact 0.91, not curated).
+  scaffold_2 at 53.94 Mb is now "order unresolved" (0.62 vs 0.61) rather than a telomere block.
+- Small scaffolds (up to 400 px) are split at a gap when a run of end contigs (>= 8 px) is called
+  haplotig on its own (line, low coverage) and the rest is not (coverage >= 0.8): scaffold_30 (last
+  contig 0.68 against 1.00), as curated; scaffold_28 (6 px low end contig, tagged whole) is not.
+- Several clear pieces may go into one junction, ordered by contact with its two sides: scaffold_30's
+  first part follows the reversed scaffold_3 46.70-47.17 piece at 22.99 Mb, as curated (the curator
+  prefers inserting it: a possible haplotype switch, but it removes the coverage dip at the junction).
+Rules pass now: junctions 27/31 / 43/68, breaks 94% / 49%, 94% of 18 chromosomes in one piece;
+disagreements 2 extra breaks, 4 wrong joins, 37 missed breaks, 25 missed joins.
+
+Placement at gaps, same review (2026-11-19). The curator: scaffold_119 clearly goes into the
+scaffold_13 11.04 Mb gap in '+'; scaffold_137 into scaffold_9 40.3 Mb in '-'; scaffold_178 (5 px)
+can be localised by eye, about the limit for a human, so a proposed insertion is fine; scaffold_38
+was a stretch (leave it Unloc); placed but unorientable repeats stay Unloc by default.
+- Room at a gap is now size-aware: a gap holding a piece of L px pushes its sides L px apart, so
+  contact across it drops to the decay ratio for L (9 px 0.74, 20 px 0.58); a gap qualifies below
+  that plus 0.1 (at least the old 0.6). scaffold_13 11.04 Mb reads 0.74, its neighbours 0.88-1.26.
+  The fixed 0.6 had excluded most curated insertion sites (0.62-0.84).
+- Choice among gaps: the piece's contact over 5 px either side of each gap (its own surroundings
+  left out: a trial-cut piece is saturated against its former neighbour) must reach 0.6 of the best;
+  among those the clearest orientation wins. Orientation alone took scaffold_137 to 41.25 Mb (contact
+  93 against 192 at 40.33 Mb, '+' instead of '-'); contact right at the gap alone moved scaffold_2
+  40.5-41.5 Mb off the curated 49.30 Mb gap (pixels at a gap read low).
+- A piece placed at a gap with orientation short of the proposal threshold now says where and
+  which way, with a waypoint at the gap, instead of "not localised: orientation weak".
+- `--level` now reaches the single-mode rules pass (`curate.SINGLE_THRESHOLDS`): orientation ratio
+  to propose 1.3 / 1.2 / 1.15, to apply 1.4 / 1.2 / 1.15, smallest applied piece 20 / 15 / 8 px at
+  levels 0 / 0.5 / 1 (the curator accepted 1.2; the 15 px minimum dates from 2026-11-12, when
+  inserts were first applied: a small piece at a gap is hard to tell from a haplotig of its
+  neighbour on a saturated MQ0 map; the scorer's junction count also ignores pieces under 15 px).
+- xgTylRafi: level 0 24/28 / 39/68, breaks 94% / 46%; level 0.5 29/33 / 45/68, 95% / 50% (scaffold_38
+  inserted at 1.27; scaffold_119, 137, 178 proposed in the curated strand); level 1 38/45 / 45/68,
+  81% / 56% (119 and 137 inserted where curated, plus scaffold_10 56.45-56.74 into scaffold_11 at
+  40.8 Mb as curated, and nine pieces the curator kept as Unlocs). Review copies: savestate_rules
+  (0.5) and savestate_rules_l1.
+- `score_all.py` reuses an output folder unless `--rerun`: compare runs in new folders or rerun.
+
+icLarUrsu primary against its curation (2026-11-19). New fixture: icLarUrsu.pri.yahs (YaHS on the
+primary; .fa, .agp, mq0 and mq10 maps, p_ctg/p_utg GFA, BUSCO). The curated icLarUrsu1.2 primary
+was made from this very assembly (its unplaced scaffolds keep their scaffold_N names), so the
+comparison is exact. Telomere motif TTTGGGTTAG (given by the curator); TTAGG finds nothing.
+- Alignment for compare_assembly: minimap2 asm5 on whole scaffolds gave no output in 2 h (1.3 of
+  6 cores: chaining whole repeat-rich chromosomes). tools/align_chunked.py with 0.1 Mb chunks and
+  `--mm-args "-K 20M --cap-kalloc 1g -f 0.002 -w 50"`: 111 s, 507 s CPU, 1.9 GB. Against 0.1 Mb
+  chunks with plain asm5 (21.6 min, 6969 s CPU, 5.4 GB): same wrong and missed junctions, 99.4%
+  of pixels placed against 99.7%, purity within 0.1%; `-w 50` alone: 8 min, 2504 s CPU. Pixels
+  that change are single pixels in scattered repeat-rich pieces (scaffold_25, 26, 32, the start of
+  scaffold_15). HANDOFF and the compare_assembly docstring now give this command.
+- Rules pass (levels 0.5 and 1 identical, with or without the motif): purity 97.3% -> 98.1%.
+  All 5 cuts are curated: scaffold_1 113.28 Mb (curated 113.37, the SUPER_1 / SUPER_22 split),
+  scaffold_8 8.52 and 17.91 Mb (curated 8.50, 17.90; the middle piece goes to SUPER_16), and
+  scaffold_2 20.74-21.60 Mb excised (the curator put it in scaffold_17's 21.2-22.0 Mb gap; the
+  tool's Unloc target is scaffold_17 at 21.44 Mb).
+- Joins: scaffold_2 across the excised piece (curated). scaffold_22 end + scaffold_16 start is the
+  curated adjacency, scored "wrong" only because scaffold_16 0-5.1 Mb is the other haplotype of
+  scaffold_22 16.8-21.9 Mb (to the curated sequence: scaffold_22 identity 1.000, scaffold_16 0.915),
+  which the curator cut out inside one contig (ptg000032l) and the tool keeps. Flagged, not applied:
+  the two outer scaffold_8 pieces together, and the middle piece's start with scaffold_26's end (both
+  curated); scaffold_14 end + scaffold_25 end (SUPER_13 is a tangle of scaffold_14, 25, 27, 30, 32).
+- Unlocs: 32, none on a wrong chromosome. 17 match a curated Unloc; 7 the curator inserted into
+  that chromosome (scaffold_79 at scaffold_17 4.29 Mb, curated 4.28; scaffold_33 about 1 Mb off);
+  8 the curator left unplaced (37, 38, 45, 48, 50, 51, 63, 68). Missed: scaffold_83 and a 1.4 Mb
+  piece of scaffold_13.
+- Missed curation is mostly inversions and swaps inside large scaffolds, where contact across the
+  breakpoint does not drop: scaffold_1 71.9 / 104.0 Mb (9.3 Mb moved and inverted), scaffold_13
+  39.6-46.1 Mb, scaffold_20 29.3 / 40.6 Mb, scaffold_5 81.0 Mb, SUPER_13. None of the 12 flagged
+  cuts (all low) is a curated break. Next rules: inversions from their bow-tie contact pattern; an
+  end-of-contig haplotig that duplicates another scaffold (scaffold_16 0-5.1 Mb).
+
+Track names and inversions (2026-11-19, same day).
+- icLarUrsu.pri.yahs maps call their tracks GAPs, ONTcov, TELOMERES (the team's older names; now
+  `gap` / `coverage`, toggled with g / c in PretextView). The rules looked for `gap` / `coverage`
+  only, so on this map every gap and coverage rule was idle. `pretextio.standard_graph_names` now
+  renames such tracks on load (a standard name already present wins; two candidates: none).
+  Rerun: scaffold_1 is now cut at both curated breakpoints, 71.92 and 104.11 Mb (weak junctions at
+  gaps), and 71.92 start + 104.11 start joined as curated (the other curated junction, 71.92 end +
+  113.28 end, flagged: tie 0.92 / 0.92); 2 haplotigs called with the coverage track; scaffold_33
+  (coverage 0.68) is now a haplotig of scaffold_7 where the curator inserted it (a new wrong
+  join in the score). Purity 98.1 -> 98.2%.
+- Inside contigs the curated breakpoints left on icLarUrsu (scaffold_13 39.6/41.2/46.1, scaffold_5
+  81.0, scaffold_20 29.3) have contact across them of 0.66-1.08 of expectation: on a saturated
+  MQ0 map an inverted segment's ends need not lose contact. The evidence is which ends touch.
+  `inversion.py` scores every segment [i, j) (w = 20 px corners, segments >= 40 px; scaffolds
+  over 3000 px on bins): reversed corners (left flank x segment end, segment start x right flank)
+  must reach the adjacent level (gain) and the assembled corners must fall to what sequence the
+  segment's length apart shows (drop), both on a 0-1 scale between that expectation and adjacency.
+  Both conditions are needed: scaffold_4 68.8-78.2 Mb has the reversed corners high (gain 1.32)
+  but the assembled ones too (0.95): both orientations, a heterozygous inversion or a repeat; the
+  curator left it. A segment at a scaffold end has one junction (half a bow-tie) and must reach
+  the end exactly: segments stopping a few px short were the end folding back (bAegFun H2_scaffold_2
+  start and H1_scaffold_2 end, the same chromosome end in both haplotypes). A reversed corner above
+  1.4x adjacent contact is a repeat or copy (bAegFun H2_scaffold_5 / 8).
+- Calls at the default thresholds (gain >= 0.8, drop <= 0.4; ends 1.0 / 0.25), 5-14 s per genome:
+  icLarUrsu 1 (scaffold_13 39.73-46.14 Mb, gain 1.25, drop 0.29: curated, the curator kept
+  39.6-41.2 as an Unloc), xgTylRafi 0, qqTroRaco 3 (H1_scaffold_2 start and H1_scaffold_26 end
+  curated; H2_scaffold_65 end not; H2_scaffold_44 and H2_scaffold_26 curated but just under),
+  bAegFun ~5 (H1_scaffold_5 start curated; H2_scaffold_2 start, H1_scaffold_22 end, H2_scaffold_8
+  not; H2_scaffold_29 partly). Applied (level 0.5): both junctions with gain >= 1.0 and drop
+  <= 0.3, which only icLarUrsu scaffold_13 reaches; half bow-ties only at level 1. The rest are
+  `flag_invert` rows with waypoints. An applied inversion is cut at both ends and rejoined
+  reversed (A tail - B tail, B head - C head); a join that took one of those ends becomes a flag
+  (scaffold_13: the join step had joined the two flanks, dropping the segment).
+- xgTylRafi rules pass (score_all, level 0.5): no inversion rows; scores unchanged (junctions
+  29/33 / 45/68, breaks 95% / 50%, 94% of 18 chromosomes in one piece, Unloc 83%).
+- Single rules pass only. Missed still: scaffold_5's terminal inversion (MQ10 says as assembled),
+  scaffold_20's swap and scaffold_15's moved-and-inverted start (found as an inversion of
+  0-21.9 Mb, under the end threshold), all needing moves the rule does not make.
+
+Contig-end overlaps, exact breakpoints, gapless joins (2026-11-19, same day).
+- icLarUrsu scaffold_16 0.26-6.32 Mb is a 0.1-3% divergent copy of scaffold_22 16.82-23.07 Mb, to
+  its end (hifiasm left both haplotypes at two contig ends); the curator cut scaffold_16 at 5.1 Mb
+  and joined scaffold_22's end there (keeping ~1.2 Mb twice). All of scaffold_32 is a copy of
+  scaffold_14 0-6.1 Mb (curator: scaffold_14 cut at 3.7 Mb, scaffold_32 kept).
+- `overlap.py`: on the map an overlap of D px pairs depth k of one end with depth D-1-k of the
+  other, a line as bright as the diagonal; adjacency gives that line only decay(D). Copy line
+  >= 0.8, >= 0.35 above adjacency, >= 20 px, both copies at coverage <= 1.3 (subtelomeric
+  repeats: xgTylRafi scaffold_3 / 8 ends at 3.7 / 5.4). icLarUrsu: exactly the two above (0.97
+  against 0.51 / 0.52; next best +0.31, scaffold_19 / 26, only 0.65 Mb aligns). xgTylRafi: none.
+  Two-haplotype maps (same-haplotype ends only): bAegFun H1_scaffold_44 / 36 and 40 / 33 (curator
+  re-phased 44 and 40 to HAP2), others not copies (qqTroRaco H2_scaffold_8 / 69: a terminal
+  inversion plus a join; H2_scaffold_18 / 65: one chromosome with scaffold_73 between).
+- Sequence (`align_overlap`, minimap2 asm20 --cs on the two ends): blocks chained collinearly in
+  depth coordinates (jumps up to 2 Mb: scaffold_14 carries 1.5 Mb more than scaffold_32 over the
+  copy, and scaffold_32 3.6-5.1 Mb twice); the copy ends where it first meets the kept end.
+  scaffold_16: 6,316,846 bp, 86% aligned, 0.75%, 13 kb from scaffold_22's end. scaffold_14: 9.12
+  Mb by sequence (scaffold_32's last Mb twice in scaffold_14; window-dependent) against 6.13 on the
+  map: proposed only (apply needs the two within 30%).
+- Applied (single rules pass, needs --fasta): the copy on the longer scaffold (the curator's
+  choice both times) cut at the base, tagged Haplotig, the other end joined to the cut; a join the
+  join step had flagged there is marked made. `close_gap`: gaps whose two sides are copies (sequence
+  only, nothing changes on the map): icLarUrsu scaffold_11 54.11 Mb (849 kb copy, 90% aligned,
+  0.77%; both copies kept in the curated assembly) and scaffold_2 64.77 Mb (26 kb). Of 37 gaps the
+  rest show only scattered repeat hits.
+- `breaks.py`, OUT.breaks.tsv, `asm --breaks`: cuts move from the pixel to the base in the
+  PretextView AGP before pretext-to-asm (scaffold_16: +20,326 bp); switches remove the gap in its
+  output, switching copies inside >= 1 kb of identical sequence nearest the kept end, and the other
+  path through the bubble becomes a haplotig. icLarUrsu: SUPER_6 = scaffold_22 1-22,993,408 +
+  scaffold_16 6,240,093-end with no gap (sequence checked across the switch; lengths add up), H_1 =
+  scaffold_16 1-6,240,092 + scaffold_22's last 79.5 kb; scaffold_11 and scaffold_2 closed the same
+  way (H_5 holds the 849 kb copy). Rows apply only where the savestate still has the cut / join.
+- pretext-to-asm follows a FASTA symlink and writes its .fai / .fa.agp next to the real file
+  (seed/fixtures/icLarUrsu.pri.yahs.fa.agp is its own index, not the YaHS AGP).
+- Next: the same in allhaps (same-haplotype ends; a copy there may need re-phasing rather than a
+  Haplotig tag), then inversions in allhaps.
+
+The same in allhaps; single-mode fixes (2026-11-19, evening).
+- Shared code: `overlap.resolve_overlaps` (detect, check with the sequence, decide), `gap_overlaps`
+  (now `--threads` gaps at a time, one minimap2 thread each: icLarUrsu 36 gaps 198 s -> 63 s with
+  6, same calls), `overlap_evidence`. Two pieces of one input scaffold are no longer compared: on
+  xgTylRafi two overlaps across misjoin cuts (scaffold_2, 3; 3-3.6% divergence) rejoined the
+  pieces and cost two junctions (45/68 -> 43/68, 94% -> 89% of chromosomes in one piece).
+  Proposed gap closures are `gap_copy` rows, not review items (they took xgTylRafi's review list
+  from 86 to 125).
+- allhaps (`allhaps/seqfix.py`, `allhaps/inversions.py`, `curate_allhaps(fasta=...)`, breaks.tsv
+  from the run): overlaps between same-haplotype ends cut off the copy as a FalseDuplicate of the
+  copy holding the other end (a review row: curators re-phased bAegFun H1_scaffold_44 and 40);
+  gaps with a copy on both sides closed (bAegFun 6, qqTroRaco 24 at level 0.5; xgTylRafi single 85).
+- allhaps inversions, first as split points for the arrangement: it moved pieces too (bAegFun
+  H2_scaffold_8 23.4-25.8 Mb to the chromosome start at end contact 0.04; junctions 3/6 -> 5/12,
+  breaks 75% -> 47%). Now turned in place in `_layout` (flips applied to arranged copies too), when
+  the corners pass `inv_*` (common.THRESHOLDS, as in single mode) and the segment aligns to the
+  homolog in the other direction from its flanks; a call the homolog mirrors is folding. Half
+  bow-ties need that alignment: at level 1 they had turned bAegFun H2_scaffold_2 and qqTroRaco
+  H2_scaffold_65 (folding; the homolog's own call just under the threshold).
+- Scores against the baseline (HEAD, same day): levels 0 and 0.5 identical on bAegFun, qqTroRaco
+  and xgTylRafi. Level 1: bAegFun junctions 5/9 -> 7/11, breaks 67% -> 55% precision (H2_scaffold_8
+  23.42-25.80 and H2_scaffold_29 2.92-5.88 turned: both align to H1 the other way; not curated);
+  qqTroRaco 34/47 -> 33/48, 37/53 -> 36/53 (H2_scaffold_65 end turned: the alignment agreed, the
+  curator re-phased that scaffold to HAP1 instead).
+- Not tested on a toy: `synth.toy_map` puts a gap between pieces and allhaps cuts it as a misjoin
+  first, so the allhaps inversion path needs a contig-internal inversion the toy cannot make.

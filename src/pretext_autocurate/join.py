@@ -68,18 +68,32 @@ def end_score(pt, sg, x, y, W, K, g):
 
 
 def telomeric_ends(pt, units, p):
-    """Set of (unit, 'h'|'t') ends whose first/last `tel_px` px carry a telomere peak."""
+    """Set of (unit, 'h'|'t') ends whose first/last `tel_px` px carry a telomere peak.
+
+    An end made by a cut (a piece of a SegmentedMap) shares its edge with the piece on the
+    other side, so a telomere right at the cut would count for both. With the strand tracks
+    the telomere goes to one side only: a head needs `telomere_5p` (a chromosome's left end),
+    a tail `telomere_3p` (xgTylRafi scaffold_2 at 53.94 Mb: a 5p telomere starting the next
+    piece kept the piece before it from joining). Original scaffold ends keep the strand-free
+    test: it also stops joins made by subtelomeric contact between chromosome ends."""
     tel = pt.graphs.get("telomere")
     if tel is None:
         return set()
     # peak = well above the track's own 99th percentile (scale-free), with an absolute floor
     thr = max(p.tel_floor, p.tel_factor * float(np.percentile(tel, 99)))
+    t5, t3 = pt.graphs.get("telomere_5p"), pt.graphs.get("telomere_3p")
+    raw = getattr(pt, "pt", pt)                 # the uncut map behind a SegmentedMap
+    so, n = raw.orig_scaffold, len(raw.orig_scaffold)
     out = set()
     for s in units:
         a, L = int(pt.scaffold_start[s]), int(pt.scaffold_npix[s])
-        if tel[a:a + p.tel_px].max() >= thr:
+        b = a + L - 1
+        cut_h = t5 is not None and t3 is not None and a > 0 and so[a - 1] == so[a]
+        cut_t = t5 is not None and t3 is not None and b + 1 < n and so[b + 1] == so[b]
+        # a cut end's window takes in the pixel across the cut (a pixel spans tens of kb)
+        if (t5[a - 1:a + p.tel_px].max() if cut_h else tel[a:a + p.tel_px].max()) >= thr:
             out.add((s, "h"))
-        if tel[a + L - p.tel_px:a + L].max() >= thr:
+        if (t3[b - p.tel_px + 1:b + 2].max() if cut_t else tel[a + L - p.tel_px:a + L].max()) >= thr:
             out.add((s, "t"))
     return out
 

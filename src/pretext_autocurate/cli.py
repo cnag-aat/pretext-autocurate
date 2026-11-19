@@ -21,7 +21,8 @@ def cmd_info(a):
     inv = invisible_scaffolds(pt)
     print(f"scaffolds\t{pt.n_scaffolds}\t({len(inv)} shorter than a pixel, {sum(l for _, l in inv)} bp)")
     for name, g in pt.graphs.items():
-        print(f"track\t{name}\tmin {int(g.min())}\tmax {int(g.max())}\tnonzero px {int((g != 0).sum())}")
+        alias = pt.graph_names.get(name, name)
+        print(f"track\t{name}{'' if alias == name else f' ({alias} in the file)'}\tmin {int(g.min())}\tmax {int(g.max())}\tnonzero px {int((g != 0).sum())}")
     if a.scaffolds:
         lens = pt.scaffold_len_bp()
         print("#scaffold\tlength_bp\tstart_px\tn_px")
@@ -107,6 +108,10 @@ def cmd_haplotigs(a):
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"rephase": "a copy of a same-haplotype scaffold, moved to the other haplotype (all-vs-all PAF)",
+                  "overlap": "a scaffold end copied another in the same haplotype: cut off as a FalseDuplicate (re-phase "
+                             "it if the other haplotype lacks it)",
+                  "flag_overlap": "two scaffold ends look like copies of each other: not cut",
+                  "flag_inversion": "a segment that looks assembled backwards: not inverted",
                   "flag_contaminant": "Tiara calls it non-target, other evidence does not back it: not tagged",
                   "keep": "site flagged, nothing changed","arrangement_differs": "the two haplotypes disagree",
                   "graph_bridge": "small contig that fills a gap (hifiasm graph): put there by asm",
@@ -497,7 +502,8 @@ def cmd_run(a):
                         pt, phasing=a.phasing, hi=maps[1] if len(maps) > 1 else None, blocks=blocks, busco_hits=hits,
                         small_blocks=small, level=lv, hap_regex=a.hap_regex, same_hap_blocks=same,
                         sex_system=a.sex_system, graph_junctions=gj, unitig_paths=ups,
-                        end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
+                        end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None,
+                        fasta=a.fasta, threads=a.threads, minimap2=a.minimap2)
             except ValueError as e:
                 sys.exit(f"error: {e}")
             out_dir = os.path.join(a.out_dir, f"level_{lv:.2f}") if a.sweep else a.out_dir
@@ -505,8 +511,14 @@ def cmd_run(a):
             prefix = os.path.join(out_dir, a.prefix)
             _tag_non_target(a, pt, st, prefix, rows)
             write_rows(rows, prefix + ".decisions.tsv")
+            exact = (info.get("exact_breaks") if isinstance(info, dict) else None) or []
+            if exact:
+                from . import breaks
+                breaks.write(exact, prefix + ".breaks.tsv")
+                print(f"{len(exact)} breakpoint(s) placed to the base in {prefix}.breaks.tsv (asm --breaks uses them)",
+                      file=sys.stderr)
             write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0], two))
-            _maybe_asm(a, prefix + ".agp", out_dir, pt.names)
+            _maybe_asm(a, prefix + ".agp", out_dir, pt.names, breaks=exact)
             # One savestate per map, each with that map's hash (it covers the file name).
             for path in [m.path for m in maps] + tracked:
                 name = os.path.basename(path) + ".savestate_autocurate" + (f"_level{lv:.2f}" if a.sweep else "")
@@ -527,13 +539,19 @@ def cmd_run(a):
             print(f"sweep summary: {os.path.join(a.out_dir, a.prefix + '.sweep.tsv')}", file=sys.stderr)
         return
     _non_target(a, pt)
-    decisions, st = curate_single(pt, apply_inserts=a.apply_inserts)
+    decisions, st = curate_single(pt, apply_inserts=a.apply_inserts, level=a.level, fasta=a.fasta, threads=a.threads)
     os.makedirs(a.out_dir, exist_ok=True)
     prefix = os.path.join(a.out_dir, a.prefix)
     _tag_non_target(a, pt, st, prefix)
     write_decisions(decisions, prefix + ".decisions.tsv")
+    exact = getattr(st, "exact_breaks", [])
+    if exact:
+        from . import breaks
+        breaks.write(exact, prefix + ".breaks.tsv")
+        print(f"{len(exact)} breakpoint(s) placed to the base in {prefix}.breaks.tsv (asm --breaks uses them)",
+              file=sys.stderr)
     write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0], False))
-    _maybe_asm(a, prefix + ".agp", a.out_dir, pt.names)
+    _maybe_asm(a, prefix + ".agp", a.out_dir, pt.names, breaks=exact)
     tracked = _with_tracks(a, None)
     for path in [m.path for m in maps] + tracked:
         st.save(os.path.join(a.out_dir, os.path.basename(path) + ".savestate_autocurate"), path)
@@ -585,14 +603,14 @@ def _graph_args(p):
                         "contigs (often sequence the other haplotype also has; each fill is listed)")
 
 
-def _maybe_asm(a, agp, out_dir, names):
+def _maybe_asm(a, agp, out_dir, names, breaks=None):
     """`run --pretext-to-asm`: the assembly from this run's AGP, in OUT_DIR/assembly."""
     if not a.pretext_to_asm:
         return
     try:
         asm.build(a.fasta, agp, os.path.join(out_dir, "assembly"), a.asm_name, exe=a.pretext_to_asm_path,
                   extra=a.asm_args, gfa=a.gfa, yahs_agp=a.yahs_agp, names=names, utg_gfa=a.utg_gfa,
-                  fill_gaps=a.fill_gaps)
+                  fill_gaps=a.fill_gaps, breaks=breaks)
     except RuntimeError as e:
         sys.exit(f"error: {e}")
     _split_organelles(os.path.join(out_dir, "assembly"), getattr(a, "non_target", ({}, {}))[0])
@@ -623,9 +641,14 @@ def cmd_asm(a):
                  "--utg-gfa / --fill-gaps need both")
     if a.fill_gaps and not a.utg_gfa:
         sys.exit("error: --fill-gaps needs --utg-gfa (the unitig graph with sequence)")
+    bk = None
+    if a.breaks:
+        from . import breaks
+        bk = breaks.read(a.breaks)
     try:
         asm.build(a.fasta, agp, a.out_dir, name, exe=a.pretext_to_asm_path, extra=a.asm_args,
-                  gfa=a.gfa, yahs_agp=a.yahs_agp, names=pt.names, utg_gfa=a.utg_gfa, fill_gaps=a.fill_gaps)
+                  gfa=a.gfa, yahs_agp=a.yahs_agp, names=pt.names, utg_gfa=a.utg_gfa, fill_gaps=a.fill_gaps,
+                  breaks=bk)
     except RuntimeError as e:
         sys.exit(f"error: {e}")
     if a.contaminants:
@@ -674,8 +697,9 @@ def main(argv=None):
                    help="allhaps only: how freely sequence may move between haplotypes. "
                         "trio: never; hic: whole chromosomes only, no H1_/H2_ mixing within one; none: freely")
     p.add_argument("--level", type=float, default=0.5,
-                   help="allhaps: how readily to act, 0 (conservative: only the clearest evidence, flag the rest) to 1 "
-                        "(aggressive); moves every act-or-flag threshold together [0.5]")
+                   help="how readily to act, 0 (conservative: only the clearest evidence, flag the rest) to 1 "
+                        "(aggressive); moves every act-or-flag threshold together (allhaps, the solver, and in "
+                        "single mode the insertion thresholds) [0.5]")
     p.add_argument("--engine", choices=["rules", "adjacency"], default="rules",
                    help="rules = the step-by-step pass; adjacency = the experimental adjacency solver (contig ends "
                         "scored and joined best first; solver.py), for comparison. Both modes; in single mode the "
@@ -746,6 +770,8 @@ def main(argv=None):
     p.add_argument("--state", required=True, help="the savestate, e.g. the curator's after review")
     _contam_args(p, asm_only=True)
     p.add_argument("--fasta", required=True, help="the assembly the map was made from (plain or .gz)")
+    p.add_argument("--breaks", help="a run's OUT.breaks.tsv: cuts placed to the base and gapless joins, applied where "
+                                    "the savestate still has them")
     p.add_argument("--out-dir", default=".")
     _asm_args(p)
     _graph_args(p)

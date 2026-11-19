@@ -23,6 +23,9 @@ class Level:
 # meaning). The level moves them all together (`--level`); this table is where they live.
 THRESHOLDS = {
     "pair_margin": (1.5, 1.3, 1.15, "how far the best homolog must beat the next (pair_homologs)"),
+    "inv_gain": (1.2, 1.0, 0.8, "inversion with both junctions: reversed corners (1 = adjacent) needed to turn it"),
+    "inv_drop": (0.2, 0.3, 0.4, "inversion with both junctions: assembled corners at most this to turn it"),
+    "inv_end_gain": (9.9, 9.9, 1.0, "inversion at a scaffold end (half a bow-tie): reversed corner needed to turn it"),
     "gap_max": (0.45, 0.6, 0.75, "contact across a gap below this (of expectation) makes it a site"),
     "sharp_max": (0.05, 0.1, 0.2, "contact across a point with no gap below this: a sharp break"),
     "tip_max": (0.35, 0.5, 0.65, "end piece contact ratio deciding a tip inversion"),

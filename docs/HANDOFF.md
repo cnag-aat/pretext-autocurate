@@ -14,6 +14,9 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `layout.py` | savestate + map -> pieces, AGP, TSV |
 | `signal.py` | decay curve, full-resolution `strip`/`block` readers, `insulation` (contact across each boundary / expectation), coverage ratio |
 | `misjoin.py` | `detect_misjoins` (cuts), `weak_junctions` (candidate breakpoints) |
+| `overlap.py` | contig-end overlaps: `detect_end_overlaps` (one scaffold's end is the other haplotype of another's end: a copy line pairing depth k with depth D-1-k), `align_overlap` (minimap2 asm20 --cs on the two ends: collinear copy chain in depth coordinates, where the copy stops, an identical stretch to switch at) |
+| `breaks.py` | breakpoints placed to the base (`OUT.breaks.tsv`): `refine_cuts` moves pixel cuts in the PretextView AGP before pretext-to-asm; `apply_switches` makes gapless joins in its output (overlaps between scaffolds, haplotypic gaps), the other path through each bubble kept as a haplotig |
+| `inversion.py` | `detect_inversions`: a segment assembled backwards inside a piece, from the bow-tie (reversed-end corners at adjacent contact AND assembled-end corners down to what the segment's length gives; half a bow-tie at a scaffold end) |
 | `haplotig.py` | `detect_haplotigs` (whole small scaffolds, tiers high/medium/low), `detect_contig_haplotigs` (gap-to-gap contigs) |
 | `place.py` | `place_scaffolds`: anchor (chromosome) for each small piece; localise only at reduced-contact junctions |
 | `join.py` | `find_joins`: mutual-best end contact between pieces > 150 px, telomeric ends never joined, chains with orientation |
@@ -25,6 +28,8 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/evidence.py` | hifiasm graph evidence at sites (`_graph_evidence`, `_unitig_evidence`) |
 | `allhaps/chromjoin.py` | chromosome-level joins: pairs merged on specific, spread-out whole-block contact with repeat bins masked (arms apart across centromeric repeats); guards against cuts the pass made and small clustering chromosomes |
 | `allhaps/graphjoin.py` | joins only hifiasm's graph sees, between scaffold ends: `links` (evidence for `merge_pairs`), `place` (the smaller scaffold put at the larger one's end) |
+| `allhaps/seqfix.py` | with `--fasta`: contig-end overlaps within one haplotype (the copy cut off at the base, kept out of the chain as a FalseDuplicate of the copy holding the other end; a review row, since curators sometimes re-phase such copies) and gaps with a copy on both sides (`close_gap`, breaks.tsv); `find` in `_setup`, `tag_copies` in `_follow` |
+| `allhaps/inversions.py` | inversions (inversion.py) turned in place in `_layout` (never moved: split points let the arrangement move the pieces too) when the corners pass `inv_*` and the homolog agrees: the segment aligns to it in the other direction from its flanks (at a scaffold end this is required); a call whose homolog shows the same pattern is folding |
 | `allhaps/selfdup.py` | two copies of one region in a scaffold: `self_duplications` (repeat / duplication / haplotypic by read depth), `apply_cuts` (a haplotypic copy cut out at the gaps around it), `rows` |
 | `allhaps/insert.py` | `insert_cuts`: a loose scaffold (in no pair) that fills a hole in its own haplotype's copy gets that copy cut at a gap where the alignment jumps, so the chain puts it inside; strict (gap within 250 kb of the flanks, little own sequence between them), fires on none of the fixtures yet. Pieces that still belong inside an uncut piece become `insert_candidate` rows (`driver.along`) instead of being joined at an end |
 | `allhaps/small.py` | small scaffolds (`place_small`): unloc, candidate, join, false duplicate |
@@ -41,8 +46,12 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `cli.py` | `info`, `dump`, `convert`, `asm`, `haplotigs`, `run` (mode detection, `--level` / `--sweep`, review table, run info, track and graph options, `--pretext-to-asm`) |
 
 Order inside `curate_single`: misjoin cuts -> contig haplotigs (cut at gaps) -> weak
-junctions cut tentatively and kept only if pieces fit better elsewhere -> `SegmentedMap`
--> joins/chains -> haplotig calls -> placement -> layout per chain (pieces, insertions,
+junctions cut tentatively and kept only if pieces fit better elsewhere -> inversions (cut at
+both ends when clear, else proposed) -> contig-end overlaps (with `--fasta`: the copy cut off
+at the base the alignment gives, else proposed) -> gaps with haplotypic copies on both sides
+(sequence only: switch rows for asm) -> `SegmentedMap` -> joins/chains (an applied inversion
+then takes its ends back, reversed; an applied overlap joins the other scaffold's end to the
+cut, the copy becomes its Haplotig) -> haplotig calls -> placement -> layout per chain (pieces, insertions,
 then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags/waypoints.
 
 ## How to run and check
@@ -52,7 +61,9 @@ then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags
     ... run --mode allhaps --map MQ0 --map MQ10 --paf H2_vs_H1.paf --small-paf small_vs_all.paf --busco-table H1=... --busco-table H2=...
     PYTHONPATH=src python3 -m pretext_autocurate.cli run --mode allhaps --phasing hic --map MQ0 --map MQ10 --out-dir out_bird
     python3 tools/compare_layouts.py MAP TOOL.savestate CURATOR.savestate
-    python3 tools/align_chunked.py CURATED.fa.gz DIPLOID.fa diploid_vs_curated.paf -t 4   # 10 Mb chunks, 12 GB watchdog
+    python3 tools/align_chunked.py CURATED.fa.gz DIPLOID.fa diploid_vs_curated.paf -t 6 --chunk-mb 0.1 \
+        --mm-args "-K 20M --cap-kalloc 1g -f 0.002 -w 50"     # 12 GB watchdog; icLarUrsu 1.8 Gb: 2 min, 1.9 GB
+    # (compare_assembly only reads one block per pixel; whole-scaffold minimap2 there gave nothing in 2 h)
     python3 tools/compare_assembly.py MAP diploid_vs_curated.paf [SAVESTATE ...] --list --plot P --dgenies P
 
 Outputs: `<map>.savestate_autocurate`, `autocurate.decisions.tsv` (every action with its
@@ -71,6 +82,12 @@ evidence), `autocurate.agp`. pytest is not installed; tests are unittest.
   `.savestate_final` and `.savestate_curator_1_on_autocurate_level1` (the curator's
   corrections of the tool's map-only level 1.0 output, 2026-11-14), the FASTA, the
   H2-against-H1 PAF and per-haplotype BUSCO tables. Added 2026-11-13 as the harder allhaps test.
+- icLarUrsu.pri.yahs (weevil *Larinus ursus*, primary assembly, single mode; MQ0 and MQ10 maps,
+  FASTA, YaHS AGP, hifiasm GFAs, BUSCO; 2026-11-19). No curator savestate: the curated FASTA
+  `icLarUrsu1.2.primary.curated.fa.gz` was made from this assembly, so score with
+  `tools/align_chunked.py` + `tools/compare_assembly.py`. Telomere motif TTTGGGTTAG. Its maps
+  name the tracks GAPs / ONTcov / TELOMERES (older names; now `gap` / `coverage`, which
+  PretextView toggles with g / c): `pretextio.standard_graph_names` renames them on load.
 - CAE71 savestates only; the CAE71 maps are not in the repo.
 - Wanted (curator, 2026-11-13): an allhaps test that needs extensive curation, as the
   gastropod does. The bird is too well behaved for that. The curator will check whether
@@ -349,8 +366,11 @@ Engineering
     25 tests in about a second on every push; the fixture suite stays for releases. Next:
     toy genomes for more rules (sex chromosomes from the coverage track, small pieces,
     the hifiasm graph end to end with `asm` minus pretext-to-asm).
-17. **`--level` in single mode**: its thresholds are fixed; reading them through `Level`
-    would let a sweep cover both modes.
+17. **`--level` in single mode**: the rules pass reads it for its insertion and inversion
+    thresholds (`curate.SINGLE_THRESHOLDS`, 2026-11-19); the misjoin, join and haplotig thresholds
+    are still fixed, and `--sweep` does not cover the single rules pass yet. Inversions,
+    contig-end overlaps and gap closing are in the single rules pass and in allhaps
+    (`allhaps/inversions.py`, `allhaps/seqfix.py`), not in the adjacency engine.
 18. **Packaging**: a bioconda recipe (with minimap2 and miniprot as dependencies), after
     checking that bioconda accepts a noncommercial license; the Intel-only Red / PretextGraph stay optional.
 

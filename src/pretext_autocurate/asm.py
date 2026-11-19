@@ -53,7 +53,7 @@ def run_pretext_to_asm(fasta, agp, out_dir, name=None, version=1, exe=None, extr
 
 
 def build(fasta, agp, out_dir, name=None, exe=None, extra="", gfa=(), yahs_agp=(), names=None, utg_gfa=None,
-          fill_gaps=False):
+          fill_gaps=False, breaks=None):
     """The assembly files from a PretextView-style AGP, with the hifiasm graph when given
     (`gfa`: contig GFAs, `yahs_agp`: YaHS AGPs, both lists): bridge contigs are put into
     their gaps before pretext-to-asm, and gaps between graph-linked contig ends are closed in
@@ -61,7 +61,11 @@ def build(fasta, agp, out_dir, name=None, exe=None, extra="", gfa=(), yahs_agp=(
     sequence) contigs that overlap along a single unitig path are joined too, and with
     `fill_gaps` a gap with a single unitig path is filled with the path's sequence between
     the two contigs (OUT_DIR/<name>.gapfills.fa holds those sequences; the AGPs name them).
-    Every graph edit is listed in OUT_DIR/<name>.graph_edits.tsv. Returns that list."""
+    Every graph edit is listed in OUT_DIR/<name>.graph_edits.tsv. Returns that list.
+
+    `breaks`: rows of a run's breaks.tsv (breaks.read): cuts are moved to their exact base in
+    the AGP before pretext-to-asm, and gapless joins are made in its output after the graph
+    edits; both are listed in OUT_DIR/<name>.exact_edits.tsv."""
     from . import graph as G
     name = name or default_name(fasta)
     os.makedirs(out_dir, exist_ok=True)
@@ -117,6 +121,15 @@ def build(fasta, agp, out_dir, name=None, exe=None, extra="", gfa=(), yahs_agp=(
                                  overlap="", action=f"contig_placed_inserted: {lay.place[c].scaffold} between "
                                                     f"{left} and {right} (unitig path through {c})"))
         agp = bridged
+    exact_rows = []
+    if breaks:
+        from . import breaks as B
+        with open(agp) as f:
+            res = next((float(m.group(1)) for m in (re.search(r"RESOLUTION: ([\d.]+)", ln) for ln in f) if m), 0.0)
+        refined = os.path.join(out_dir, name + ".pretext.exact.agp")
+        for row, done, note in B.refine_cuts(agp, refined, breaks, tol_bp=int(2 * res) + 2):
+            exact_rows.append(dict(kind="cut", where=f"{row['scaffold']}:{row['bp']}", done=done, note=note))
+        agp = refined
     run_pretext_to_asm(fasta, agp, out_dir, name, exe=exe, extra=extra)
     if gfa and yahs_agp:
         fills = {}
@@ -142,5 +155,20 @@ def build(fasta, agp, out_dir, name=None, exe=None, extra="", gfa=(), yahs_agp=(
         nf = sum(r["action"].startswith("gap_filled") for r in rows)
         nb = sum(r["action"].startswith(("bridge_inserted", "contig_placed_inserted")) for r in rows)
         print(f"hifiasm graph: {nb} bridge contig(s) put into gaps, {n} gap(s) closed, {nf} filled; see {rep}",
+              file=sys.stderr)
+    if breaks and any(r["kind"] == "switch" for r in breaks):
+        from . import breaks as B
+        from .graph import Faidx
+        sw = []
+        B.apply_switches(out_dir, Faidx(fasta), breaks, sw)
+        exact_rows += [dict(kind="switch", where=f"{r['left']} | {r['right']}", done=r["action"].startswith("switch:"),
+                            note=r["action"]) for r in sw]
+    if exact_rows:
+        rep = os.path.join(out_dir, name + ".exact_edits.tsv")
+        with open(rep, "w") as f:
+            f.write("kind\twhere\tapplied\tnote\n")
+            for r in exact_rows:
+                f.write(f"{r['kind']}\t{r['where']}\t{'yes' if r['done'] else 'no'}\t{r['note']}\n")
+        print(f"exact breakpoints: {sum(r['done'] for r in exact_rows)} of {len(exact_rows)} applied; see {rep}",
               file=sys.stderr)
     return rows

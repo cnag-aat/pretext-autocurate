@@ -10,14 +10,15 @@ from .common import Thresholds, _signal, _union, split_block
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
-from . import chromjoin, graphjoin, insert, selfdup
+from . import chromjoin, graphjoin, insert, inversions, selfdup, seqfix
 from .small import place_small
 from .state import Run
 
 
 def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=True, blocks=None, busco_hits=None,
                    small_blocks=None, do_place=True, level=0.5, do_arrange=True, same_hap_blocks=None, sex_system=None,
-                   graph_junctions=None, unitig_paths=None, end_joins=None, stop_after=None):
+                   graph_junctions=None, unitig_paths=None, end_joins=None, stop_after=None, fasta=None, threads=4,
+                   minimap2=None):
     """allhaps curation: cuts (`telomere_sites`), homolog pairing, small scaffolds
     (`place_small`), merged pairs, order and orientation within each copy (end contact, then
     the other haplotype's alignment), parallel layout, HAP tags, paint, savestate.
@@ -33,6 +34,9 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
     across YaHS gaps (`graph.unitig_paths`), weaker evidence (see `_unitig_evidence`).
     `end_joins`: joins between scaffold ends only the graph sees (`graph.scaffold_end_joins`):
     made (`graphjoin`), and evidence for merging pairs.
+    `fasta`: the assembly; contig-end overlaps within a haplotype and gaps with a copy on both
+    sides are then decided by the sequence (`seqfix`), and info["exact_breaks"] holds the rows
+    for breaks.tsv (cuts placed to the base, gapless joins).
     Returns (rows for the decisions table, savestate, info). `stop_after` (a step name in
     STEPS, for tests) returns the run's state (`state.Run`) after that step instead."""
     raw = pt
@@ -41,7 +45,7 @@ def curate_allhaps(pt, phasing="hic", hap_regex=r"^(H\d+)_", hi=None, do_cuts=Tr
                busco_hits=busco_hits, small_blocks=small_blocks, do_place=do_place, level=level,
                do_arrange=do_arrange, same_hap_blocks=same_hap_blocks, sex_system=sex_system,
                graph_junctions=graph_junctions, unitig_paths=unitig_paths, end_joins=end_joins or [], raw=raw,
-               th=th)
+               th=th, fasta=fasta, threads=threads, minimap2=minimap2)
     if stop_after is not None and stop_after not in STEPS:
         raise ValueError(f"stop_after: unknown step {stop_after!r} (steps: {', '.join(STEPS)})")
     for name in STEPS[:-1]:
@@ -82,6 +86,19 @@ def _setup(run_):
         sites, ins_rows = insert.insert_cuts(raw, first_pairs, blocks, hap_regex, sites)
         graph_rows += ins_rows
     cuts = [(x["q"], x["s"], x["reason"]) for x in sites if x["action"] == "cut"]
+    # contig-end overlaps within a haplotype and gaps with a copy on both sides (seqfix)
+    run_.seq_overlaps, run_.exact_breaks = [], []
+    if run_.fasta and do_cuts:
+        more, seq_rows, exact, applied = seqfix.find(raw, [q for q, _, _ in cuts], run_.fasta, hap_regex,
+                                                     run_.threads, run_.minimap2)
+        cuts += more
+        graph_rows += seq_rows
+        run_.seq_overlaps, run_.exact_breaks = applied, exact
+    # inversions inside a scaffold: turned in place in the layout (inversions.py)
+    run_.inv_flips = []
+    if do_cuts:
+        run_.inv_flips, inv_rows = inversions.find(raw, [q for q, _, _ in cuts], blocks, th)
+        graph_rows += inv_rows
     flips = [x["tip"] for x in sites if x["action"] == "invert_tip"]
     pt = SegmentedMap(raw, [q for q, _, _ in cuts])          # from here on, units are cut pieces
     pairs, info = pair_homologs(pt, hap_regex, blocks=blocks, margin=margin)
@@ -714,6 +731,8 @@ def _follow(run_):
             c = dict(u=v, copy=copy, action="unloc", third_copy=True, evidence=why, score="", ratio="")
             small_calls.append(c)
             attach.setdefault(copy, []).append(c)
+    if run_.seq_overlaps:                    # copies cut off at a contig-end overlap (seqfix)
+        arr_rows += seqfix.tag_copies(run_)
     # Loose scaffolds whose place is inside one piece of their copy (no gap there to cut at): left
     # out, with a row saying where they belong.
     for v, (copy, piece) in run_.inside.items():
@@ -846,7 +865,7 @@ def _rows(run_):
                          evidence=f"cut at {raw.rel_coord[q] * raw.bp_per_pix / 1e6:.2f} Mb; " + why))
     rows += graph_rows
     for x in sites:
-        if x["action"] != "cut" and not x.get("graph"):     # graph-backed ones: the graph_* row says it
+        if x["action"] != "cut" and not x.get("graph") and not x.get("quiet"):   # graph-backed ones: the graph_* row says it
             rows.append(dict(action=x["action"], scaffold=raw.names[x["s"]],
                              length_mb=round(raw.rel_coord[x["q"]] * raw.bp_per_pix / 1e6, 2), partner="", strand="",
                              tag="", score="", next_best="",
@@ -936,15 +955,27 @@ def _layout(run_):
     sex_copies, sex_links, sex_tag_of = [], {}, {}
     look_units = {c["u"] for c in small_calls if c["action"] == "candidate" and not c["third_copy"]}
     fd_units = {c["u"] for c in small_calls if c["third_copy"] and c["action"] != "join"}
+    inv_flips = getattr(run_, "inv_flips", [])
+
+    def turn_inversions(px):
+        """Each inversion (inversions.py) reversed in place where its pixels lie together."""
+        for a, b in inv_flips:
+            idx = np.nonzero((px >= a) & (px <= b))[0]
+            if len(idx) == b - a + 1 and idx[-1] - idx[0] == b - a:
+                px[idx[0]:idx[-1] + 1] = px[idx[0]:idx[-1] + 1][::-1].copy()
+        return px
+
     def pixels(s, rev=False):
         """Pixels of a unit in layout order, with any inverted end piece turned in place."""
         if s in arranged:
             px = np.concatenate([np.arange(a, b + 1)[::-1] if r else np.arange(a, b + 1) for a, b, r in arranged[s]])
+            px = turn_inversions(px)
             return px[::-1] if rev else px
         px = np.arange(start[s], start[s] + npx[s])
         for a, b in flips:
             if start[s] <= a and b < start[s] + npx[s]:
                 px[a - start[s]:b - start[s] + 1] = px[a - start[s]:b - start[s] + 1][::-1].copy()
+        px = turn_inversions(px)
         return px[::-1] if rev else px
     # pairs largest first, the two copies side by side; paint ids 2k+1 / 2k+2
     for k, p in enumerate(sorted(main, key=lambda p: -(npx[p.a] + npx[p.b]))):
@@ -1127,4 +1158,5 @@ def _layout(run_):
         if mask:
             st.meta_flags.append((i, mask))
     info["sex"] = sx
+    info["exact_breaks"] = run_.exact_breaks
     return rows, st, info

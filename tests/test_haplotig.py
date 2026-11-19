@@ -86,6 +86,20 @@ class TestHaplotig(unittest.TestCase):
             self.assertTrue(gap[c.end_px] or c.end_px + 1 == self.pt.npix or
                             self.pt.orig_scaffold[c.end_px + 1] != self.pt.orig_scaffold[c.end_px])
 
+    def test_small_scaffold_haplotig_contig(self):
+        """scaffold_30: the curator cut its last contig off at the gap as a haplotig; scaffold_28
+        (a 6 px low-coverage end contig) was tagged whole, so it must not be split."""
+        from pretext_autocurate.curate import small_scaffold_haplotigs
+        cuts, pieces = small_scaffold_haplotigs(self.pt, [])
+        by = {c.scaffold: c for c in cuts}
+        self.assertIn("scaffold_30", by)
+        self.assertNotIn("scaffold_28", by)
+        self.assertLessEqual(len(cuts), 3)
+        s = self.pt.names.index("scaffold_30")
+        a, L = int(self.pt.scaffold_start[s]), int(self.pt.scaffold_npix[s])
+        self.assertTrue(self.pt.graphs["gap"][by["scaffold_30"].after_px] > 0)    # at the gap
+        self.assertIn((by["scaffold_30"].after_px + 1, a + L), pieces)          # the end contig
+
     def test_cli_writes_loadable_state(self):
         with tempfile.TemporaryDirectory() as d:
             cli.main(["haplotigs", TYL, "--out-dir", d])

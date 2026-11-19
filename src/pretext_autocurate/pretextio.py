@@ -66,6 +66,26 @@ def header_hash(path):
     return struct.pack("<Q", fasthash64(comp, fasthash64(name, _HASH_SEED)))
 
 
+def standard_graph_names(graphs):
+    """Rename, in place, tracks the rules read by a fixed name ('gap', 'coverage', 'telomere')
+    when the file calls them something else: PretextGraph -n takes any name (icLarUrsu.pri.yahs
+    has 'GAPs', 'ONTcov', 'TELOMERES'; a strict match there left every gap rule idle). A track
+    already under its standard name, or more than one candidate for a name, is left alone.
+    Strand telomere tracks (5p/3p) are matched by tracks.from_map. Returns {name: name in file}."""
+    want = {"gap": lambda s: "gap" in s,
+            "coverage": lambda s: "cov" in s,
+            "telomere": lambda s: "telo" in s and "5p" not in s and "3p" not in s}
+    names = {k: k for k in graphs}
+    for std, match in want.items():
+        if std in graphs:
+            continue
+        cand = [k for k in graphs if k not in want and match(k.lower())]
+        if len(cand) == 1:
+            graphs[std] = graphs.pop(cand[0])
+            names[std] = names.pop(cand[0])
+    return names
+
+
 class Pretext:
     """Header, texture atlas and graph tracks of a .pretext file.
 
@@ -112,6 +132,7 @@ class Pretext:
             (n,) = struct.unpack("<I", f.read(4))
             d = inflate(f.read(n), 64 + 4 * self.npix)
             self.graphs[d[:64].split(b"\0")[0].decode()] = np.frombuffer(d[64:], dtype="<i4").copy()
+        self.graph_names = standard_graph_names(self.graphs)    # {name used here: name in the file}
         self._init_pixels()
 
     def close(self):

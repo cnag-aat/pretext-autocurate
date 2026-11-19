@@ -81,6 +81,7 @@ through `precur/autocurate.review.tsv`.
 | `autocurate.decisions.tsv` | every action with its evidence (cut, join, pairing, unloc, flag ...) |
 | `autocurate.agp` | the proposed assembly, written as PretextView would export it after loading the savestate (input for pretext-to-asm) |
 | `autocurate.run.txt` | version, command line and every option, for reproducibility |
+| `autocurate.breaks.tsv` | with `--fasta` (both modes): cuts placed to the base by the sequence and gapless joins, for `asm --breaks` |
 | `work/` | cached alignments (reused on the next run) |
 | `tracks/` | bedgraphs of the evidence tracks (sex chromosomes, PARs, telomeres by strand, ...) |
 | `assembly/` | with `--pretext-to-asm`: pretext-to-asm's files (FASTA and AGP per haplotype, chromosome lists, ...), plus `<name>.graph_edits.tsv` (every gap closed, filled or left, and contigs placed, with the reason) and `<name>.gapfills.fa` (gap fills) when the hifiasm graphs are given; `asm` writes the same into its `--out-dir` |
@@ -107,7 +108,25 @@ clearest evidence and flags the rest, `--level 1` acts on weaker evidence too (d
 
 This writes `precur/level_0.00/` ... `precur/level_1.00/` and `precur/autocurate.sweep.tsv`
 (counts of each action per level). After the first level, each further one takes a
-fraction of the time. `--level` applies to two-haplotype mode.
+fraction of the time. `--sweep` applies to two-haplotype mode (and to `--engine adjacency`). In
+single-haplotype mode the rules pass reads `--level` for its insertion and inversion thresholds
+(`curate.SINGLE_THRESHOLDS`):
+
+| threshold | level 0 | 0.5 | 1 |
+|---|---|---|---|
+| orientation ratio to propose an insertion (waypoint at the gap) | 1.3 | 1.2 | 1.15 |
+| orientation ratio to apply an insertion | 1.4 | 1.2 | 1.15 |
+| smallest piece (px) whose insertion is applied, not only proposed | 20 | 15 | 8 |
+| inversion: contact across the reversed ends needed to apply (1 = adjacent) | 1.2 | 1.0 | 0.8 |
+| inversion: contact across the assembled ends allowed (0 = as far apart as the segment is long) | 0.2 | 0.3 | 0.4 |
+| inversion at a scaffold end (half a bow-tie): applied (two haplotypes: only if the homolog alignment agrees) | no | no | at 1.0 |
+
+An inversion is a segment assembled backwards inside a scaffold. Its two ends touch the
+wrong neighbours, which shows as a bow-tie of off-diagonal contact at the segment's corners.
+The tool calls one only when the reversed ends touch like adjacent sequence **and** the
+assembled ends lose contact. When both stay high (both orientations in the reads, as with a
+heterozygous inversion or a repeat), nothing is called. Weaker calls are `flag_invert` rows
+with waypoints at both ends.
 
 ## What it does
 
@@ -152,6 +171,15 @@ Two haplotypes (`allhaps`):
   changes, so they are made on the assembly files, each listed with its evidence. Joins
   only the graph sees between scaffold ends (usually a small piece at a chromosome end)
   are listed for review (`graph_join_candidate`), not made.
+- **With `--fasta`, as in single-haplotype mode** (below): an end of one scaffold that copies an
+  end of another scaffold of the same haplotype is cut off at the base the alignment gives and
+  tagged `FalseDuplicate` (`overlap`, a review row: re-phase it instead if the other haplotype
+  lacks that sequence); gaps with a copy on both sides are closed by `asm` (`close_gap`); both
+  go to `autocurate.breaks.tsv`.
+- **Inversions** inside a scaffold are turned in place (`inversion`) when the bow-tie passes the
+  level's thresholds and the segment aligns to the other haplotype in the other direction from
+  its flanks; at a scaffold end that alignment is required. The same pattern at the same place
+  in both haplotypes is folding of the chromosome, not a misassembly (`flag_inversion`).
 - Flags (does not change): sites where both sides belong together, places where the two
   haplotypes disagree, unloc candidates with one line of evidence, scaffolds with no homolog.
 
@@ -161,8 +189,27 @@ prefix's copy when the alignment says so; `none` currently behaves like `hic`.
 
 Single haplotype: misjoin cuts (preferably at gaps), joins and orientation of large pieces,
 rearrangements inside a scaffold (tentative cuts kept only if the pieces fit better
-elsewhere), placement of small scaffolds (inserted at a gap when clear, `Unloc` otherwise),
-haplotigs (off-diagonal line plus reduced coverage; borderline ones highlighted).
+elsewhere), inversions (the bow-tie, see the level table), placement of small scaffolds
+(inserted at a gap when clear, `Unloc` otherwise), haplotigs (off-diagonal line plus reduced
+coverage; borderline ones highlighted), and, with `--fasta`:
+
+- **Overlapping scaffold ends** (`overlap` / `flag_overlap`): one scaffold's end is the other
+  haplotype of another scaffold's end, and the copy runs to that scaffold's end (hifiasm left
+  both haplotypes at two contig ends). On the map this is a line of contact as bright as the
+  diagonal pairing the two ends inwards; the sequence confirms it (the ends align in order at
+  haplotype-level divergence) and says where the copy stops. The copy on the longer scaffold
+  is cut off at that base and tagged `Haplotig`, and the other scaffold's end is joined to the
+  cut. Without `--fasta`, or when the sequence and the map disagree on the copy, it is proposed.
+- **Gaps with a copy on both sides** (`close_gap`): the sequence after a gap aligns in order
+  with the sequence before it, up to the gap. Nothing changes on the map; `asm` closes the gap.
+
+Cuts the sequence placed, and gapless joins, are written to `autocurate.breaks.tsv`. `asm
+--breaks` (and `run --pretext-to-asm`) uses them: a cut moves from its pixel (tens of kb) to
+the base, and a join at an overlap or a haplotypic gap is made without a gap, switching from
+one copy to the other inside a stretch of at least 1 kb where the two are identical; the other
+path through the bubble (the other copy of each side) is written as a haplotig, so no sequence
+is lost. They apply only where the savestate still has that cut or join: whatever you change
+in PretextView keeps its pixel position. `<name>.exact_edits.tsv` lists what was applied.
 
 ## Optional evidence
 
@@ -196,7 +243,7 @@ savestates are the best way to improve the rules.
     pretext-autocurate info MAP.pretext                 # header, tracks, scaffolds
     pretext-autocurate dump STATE --map MAP.pretext     # a savestate in readable form
     pretext-autocurate convert --map MAP --state STATE --to agp|tsv|state --out FILE
-    pretext-autocurate asm --map MAP --state STATE --fasta ASM.fa --out-dir final
+    pretext-autocurate asm --map MAP --state STATE --fasta ASM.fa --out-dir final [--breaks precur/autocurate.breaks.tsv]
 
 `asm` builds the assembly files from a savestate (typically yours, after review) without
 exporting from PretextView: it writes the AGP PretextView would export and runs

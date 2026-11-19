@@ -1,7 +1,8 @@
 """Score a layout against a curated assembly instead of a savestate (when the curation was
 done in several rounds and only the final FASTA is kept).
 
-    minimap2 -x asm5 --secondary=no CURATED.fa(.gz) DIPLOID.fa > diploid_vs_curated.paf
+    python3 tools/align_chunked.py CURATED.fa(.gz) DIPLOID.fa diploid_vs_curated.paf -t 6 \\
+        --chunk-mb 0.1 --mm-args "-K 20M --cap-kalloc 1g -f 0.002 -w 50"
     python3 tools/compare_assembly.py MAP PAF [SAVESTATE ...] [--plot out.png] [--min-mb 1]
 
 Every pixel of the map is projected through the alignment onto the curated assembly

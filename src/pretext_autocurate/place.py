@@ -33,7 +33,11 @@ class Params:
     junction_tol: int = 5        # px from the peak to a gap or anchor end
     orient_min: float = 1.15     # contact ratio between the two orientations
     flank: int = 15              # px of anchor on each side of a junction used for orientation
-    junction_max: float = 0.6    # a junction has room for an insertion if contact across it is below this
+    junction_max: float = 0.6    # a junction has room for an insertion if contact across it is below this ...
+    room_w: int = 10             # ... or below what a gap holding the piece would show (`junction_contact`
+    room_slack: float = 0.1      # is insulation(room_w): a w x w square across the boundary) plus this
+    contact_share: float = 0.6   # junctions where the piece's contact is below this x its best are not candidates
+
 
 
 @dataclass
@@ -145,12 +149,37 @@ def place_scaffolds(pt, params=None, signal=None, only=None, junction_contact=No
             dist = abs(q + 0.5 - c)
         else:
             reach = 2 * p.w_chrom + L
+            # contact per column without the piece's own surroundings: its former neighbours
+            # (a trial-cut piece) touch it at saturated near-diagonal levels; NaN there
+            far = prof.astype(np.float64).copy()
+            far[max(0, a - 3):a + L + 3] = np.nan
+            # A gap that holds a piece of L px pushes its two sides L px apart: contact across
+            # it drops to `room` of normal (9 px: 0.74; 20 px: 0.58 on xgTylRafi). A small piece
+            # leaves only a small dip (scaffold_119 at scaffold_13 11.04 Mb: 0.74, neighbouring
+            # gaps 0.88-1.26), so the fixed junction_max alone missed most curated insertions.
+            k = np.arange(p.room_w)
+            gl = sg.decay_long(2 * p.room_w + L + 2)
+            room = float(gl[k[:, None] + k[None, :] + 1 + L].sum() / gl[k[:, None] + k[None, :] + 1].sum())
+            room_max = max(p.junction_max, room + p.room_slack)
             cands = []
             for qq in junc[(junc >= c0 - reach) & (junc <= c0 + reach)].tolist():
                 w = junction_contact[max(0, qq - 2):qq + 3]
-                if qq in (a0 - 1, a1) or (np.isfinite(w).any() and np.nanmin(w) < p.junction_max):
+                if qq in (a0 - 1, a1) or (np.isfinite(w).any() and np.nanmin(w) < room_max):
                     pl_, mi_ = orient_at(qq)
-                    cands.append((max(pl_, mi_) / max(min(pl_, mi_), 1e-3), qq))   # (orient, q)
+                    # w_loc px either side: pixels right at a sequence gap read low (scaffold_2
+                    # 40.5-41.5 Mb at scaffold_5 49.30 Mb: 54 at the gap, 100 five px on)
+                    v = far[max(a0, qq - p.w_loc + 1):min(a1, qq + p.w_loc) + 1]
+                    here = float(np.nanmean(v)) if np.isfinite(v).any() else np.nan
+                    cands.append((max(pl_, mi_) / max(min(pl_, mi_), 1e-3), qq, here))   # (orient, q, contact)
+            # junctions where the piece's own contact is well below its best are out (choosing by
+            # orientation alone took xgTylRafi scaffold_137 to scaffold_9 41.25 Mb, contact 93,
+            # past the curated 40.33 Mb gap where its contact peaks at 192); among the rest the
+            # clearest orientation wins (contact alone would always send a trial-cut piece back
+            # to the neighbour it was cut from: adjacent pixels are saturated)
+            here_all = [c[2] for c in cands if np.isfinite(c[2])]
+            if here_all:
+                top = max(here_all)
+                cands = [c for c in cands if not np.isfinite(c[2]) or c[2] >= p.contact_share * top]
             if cands:
                 q, dist = max(cands)[1], 0.0
             else:
