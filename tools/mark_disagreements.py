@@ -2,25 +2,27 @@
 """Mark where tool savestates and a reference curation disagree, for viewing in PretextView.
 
     python3 tools/mark_disagreements.py MAP REF_SAVESTATE OUT_DIR TOOL_SAVESTATE [TOOL_SAVESTATE ...]
-        [--label NAME ...] [--width 2]
+        [--label NAME ...] [--width 2] [--name SHORT]
 
-Writes to OUT_DIR:
-  - MAP copied under its own file name (the savestate hash covers the name and header, not the
-    tracks, so every savestate of MAP still opens on the copy), plus one graph track per tool
-    savestate, `vs_ref_<label>`, marking in the pixels of the input assembly (tracks move with
-    the edits):
+Writes to OUT_DIR, under a short name that PretextView's file picker shows whole (SHORT, default the
+map name up to its first '_' or '.', e.g. xgTylRafi):
+  - MAP copied as SHORT.pretext, plus one graph track per tool savestate, `vs_ref_<label>`, marking
+    in the pixels of the input assembly (tracks move with the edits); every savestate below is
+    bound to the copy (the savestate hash covers the map's file name and header, not its tracks):
         4  extra break    the tool cut or moved here, the reference did not
         3  wrong join     the tool put these two pieces together, the reference does not
         2  missed break   the reference cut here, the tool did not
         1  missed join    the reference put these together, the tool did not
     Definitions and tolerances are those of `score.compare` (what score_all.py counts).
-  - each tool savestate as <name>_<label>, its track shown in magenta; waypoints numbered from 1 at the
-    disagreements in layout order if it had none (PretextView holds 255);
-  - the reference savestate, with the first track shown;
+  - each tool savestate as SHORT.pretext.savestate_<label>, its track shown in magenta; waypoints
+    numbered from 1 at the disagreements in layout order if it had none (PretextView holds 255);
+  - the reference savestate as SHORT.pretext.savestate_<its own suffix> (savestate_4 stays
+    savestate_4; else savestate_ref), with the first track shown;
   - <label>.disagreements.tsv: waypoint, kind, scaffold and Mb on both sides, layout pixel.
 """
 import argparse
 import os
+import re
 import shutil
 import struct
 import sys
@@ -88,20 +90,23 @@ def main():
     ap.add_argument("tool", nargs="+")
     ap.add_argument("--label", nargs="*", help="one name per tool savestate (default: 1, 2, ...)")
     ap.add_argument("--width", type=int, default=2, help="pixels marked either side [2]")
+    ap.add_argument("--name", help="short name for the outputs [the map name up to its first _ or .]")
     a = ap.parse_args()
     labels = a.label or [str(i + 1) for i in range(len(a.tool))]
     if len(labels) != len(a.tool):
         sys.exit("one --label per tool savestate")
     os.makedirs(a.out_dir, exist_ok=True)
-    name = os.path.basename(a.map)
-    out_map = os.path.join(a.out_dir, name)
+    short = a.name or re.split(r"[_.]", os.path.basename(a.map))[0]
+    out_map = os.path.join(a.out_dir, short + ".pretext")
     if os.path.abspath(out_map) == os.path.abspath(a.map):
         sys.exit("OUT_DIR must not be the map's own directory")
+    rb = os.path.basename(a.ref)
+    ref_name = f"{short}.pretext." + (rb[rb.index("savestate"):] if "savestate" in rb else "savestate_ref")
     pt = Pretext(a.map)
     n_graphs = n_extensions(a.map)
     ref = SaveState.load(a.ref)
     R = Layout(pt, ref)
-    tracks = []
+    tracks, states = [], []
     for path, lab in zip(a.tool, labels):
         st = SaveState.load(path)
         T = Layout(pt, st)
@@ -129,16 +134,19 @@ def main():
         print(f"{lab}: " + ", ".join(f"{c} {kname}" for kname, c in n.items()))
         show = [t == len(tracks) - 1 for t in range(len(a.tool))]
         st = with_track(st, n_graphs, len(a.tool), show)
-        st.save(os.path.join(a.out_dir, f"{os.path.basename(path)}_{lab}"), map_path=a.map)
+        states.append((f"{short}.pretext.savestate_{lab}", st))
     ref = with_track(ref, n_graphs, len(a.tool), [t == 0 for t in range(len(a.tool))])
-    ref.save(os.path.join(a.out_dir, os.path.basename(a.ref)), map_path=a.map)
+    states.append((ref_name, ref))
     pt.close()
     shutil.copyfile(a.map, out_map)
     with open(out_map, "ab") as f:
         for tname, v in tracks:
             body = deflate(tname.encode()[:63].ljust(64, b"\0") + v.tobytes())
             f.write(b"psgh" + struct.pack("<I", len(body)) + body)
+    for fn, st in states:                     # bound to the copy: its name is in the hash
+        st.save(os.path.join(a.out_dir, fn), map_path=out_map)
     print(f"map with {len(tracks)} more track(s): {out_map}")
+    print("savestates: " + ", ".join(fn for fn, _ in states))
 
 
 if __name__ == "__main__":
