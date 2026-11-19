@@ -32,10 +32,13 @@ def fill(s, F):
     return s.replace("{F}", F).replace("{R}", R)
 
 
-def tool_states(case, out, levels):
-    """[(level or '', savestate path)] written by the run in `out`."""
+def tool_states(case, out, levels, sweep=None):
+    """[(level or '', savestate path)] written by the run in `out` (`sweep`: whether it ran with
+    --sweep; default: two-haplotype cases only)."""
     base = os.path.basename(fill(case["run"][case["run"].index("--map") + 1], ""))
-    if case["mode"] == "single":
+    if sweep is None:
+        sweep = case["mode"] != "single"
+    if not sweep:
         p = os.path.join(out, base + ".savestate_autocurate")
         return [("", p)] if os.path.exists(p) else []
     res = []
@@ -68,8 +71,9 @@ def main():
     ap.add_argument("--levels", default="0,0.5,1")
     ap.add_argument("--only", nargs="*", help="case names to run (default: all)")
     ap.add_argument("--rerun", action="store_true", help="run the tool again even if its output is there")
-    ap.add_argument("--extra", default="", help="more run arguments for every allhaps case, e.g. '--engine "
-                                                "adjacency' (use a separate --out)")
+    ap.add_argument("--extra", default="", help="more run arguments for every case, e.g. '--engine adjacency' "
+                                                "(use a separate --out); with the adjacency engine, single-haplotype "
+                                                "cases are swept over --levels too")
     a = ap.parse_args()
     F = os.path.abspath(a.fixtures)
     levels = [float(x) for x in a.levels.split(",")]
@@ -84,12 +88,14 @@ def main():
             print(f"{case['name']}: skipped, missing {missing[0]}", file=sys.stderr)
             continue
         out = os.path.join(a.out, case["name"])
-        states = tool_states(case, out, levels)
+        sweep = case["mode"] != "single" or "adjacency" in a.extra
+        states = tool_states(case, out, levels, sweep)
         took = ""
         if a.rerun or not states:
             cmd = [sys.executable, "-m", "pretext_autocurate.cli", "run", *args, "--out-dir", out]
-            if case["mode"] != "single":
-                cmd += ["--sweep", ",".join(f"{x:g}" for x in levels)] + a.extra.split()
+            if sweep:
+                cmd += ["--sweep", ",".join(f"{x:g}" for x in levels)]
+            cmd += a.extra.split()
             print(f"{case['name']}: running ...", file=sys.stderr)
             t = time.time()
             env = dict(os.environ, PYTHONPATH=os.path.join(R, "src"))
@@ -100,7 +106,7 @@ def main():
             if r.returncode != 0:
                 print(f"{case['name']}: run failed (see {a.out}/{case['name']}.log)", file=sys.stderr)
                 continue
-            states = tool_states(case, out, levels)
+            states = tool_states(case, out, levels, sweep)
         pt = Pretext(args[args.index("--map") + 1], load_graphs=False)
         for ref_name, ref_path in case["references"].items():
             ref_path = fill(ref_path, F)

@@ -110,6 +110,18 @@ class TestContam(unittest.TestCase):
                 self.assertEqual(st.tag_names(flags[i]), ["Contaminant"])
                 self.assertFalse(painted.get(i))
 
+    def test_unplaced_tags_in_the_agp(self):
+        # scaffolds under one pixel: HAP tag by prefix with two haplotypes, none with one; a
+        # contaminant gets Contaminant and nothing else either way
+        from unittest import mock
+        from pretext_autocurate import cli
+        sub = [("H1_scaffold_9", 100, ["HAP1"]), ("H1_scaffold_10", 80, ["HAP1"])]
+        with mock.patch.object(cli, "unplaced_hap_tags", return_value=sub):
+            two = cli._unplaced(None, None, {"H1_scaffold_10": "bacteria"})
+            one = cli._unplaced(None, None, {"H1_scaffold_10": "bacteria"}, haps=False)
+        self.assertEqual([t for _, _, t in two], [["HAP1"], ["Contaminant"]])
+        self.assertEqual([t for _, _, t in one], [[], ["Contaminant"]])
+
     def test_split_organelles(self):
         d = os.path.join(self.dir.name, "asm")
         os.makedirs(d, exist_ok=True)

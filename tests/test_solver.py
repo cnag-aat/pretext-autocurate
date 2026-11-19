@@ -1,4 +1,5 @@
 """The adjacency solver (`solver.solve`, `run --engine adjacency`) on toy genomes (no fixtures)."""
+import collections
 import os
 import sys
 import tempfile
@@ -10,12 +11,12 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pretext_autocurate import MapState, Pretext                 # noqa: E402
+from pretext_autocurate import MapState, Pretext, SaveState, cli  # noqa: E402
 from pretext_autocurate import solver                             # noqa: E402
 from pretext_autocurate.solver import HOM_ACROSS, _homology, contigs, solve   # noqa: E402
 from pretext_autocurate.homology import Block                      # noqa: E402
 from pretext_autocurate.synth import toy_blocks, toy_map          # noqa: E402
-from test_synthetic import CHROMS, DIPLOID                        # noqa: E402
+from test_synthetic import CHROMS, DIPLOID, SINGLE                # noqa: E402
 
 # A and B in one H1 scaffold, the right way round: a YaHS join that is right
 JOINED = [("H1_scaffold_1", [("A", 1, 0, 60, False), ("A", 1, 60, 100, False)]),
@@ -143,6 +144,23 @@ class TestSolver(unittest.TestCase):
         joins = [r for r in rows if r["action"] == "join"]
         self.assertTrue(any("H1_scaffold_3" in r["scaffold"] + r["partner"] and "H2_scaffold_2" in r["scaffold"] + r["partner"]
                             for r in joins), joins)
+
+    def test_single_haplotype_cli(self):
+        # one haplotype (scaffold_N names): run --engine adjacency goes through the solver; the
+        # misjoin of A and B is cut, nothing is paired, no HAP tag is written
+        p = os.path.join(self.dir.name, "single.pretext")
+        toy_map(p, SINGLE, CHROMS)
+        with tempfile.TemporaryDirectory() as d:
+            cli.main(["run", "--map", p, "--engine", "adjacency", "--out-dir", d])
+            st = SaveState.load(os.path.join(d, "single.pretext.savestate_autocurate"))
+            with open(os.path.join(d, "autocurate.decisions.tsv")) as f:
+                acts = collections.Counter(line.split("\t")[0] for line in f)
+        pt = Pretext(p)
+        self.assertEqual((acts["cut"], acts["pair"]), (1, 0))
+        ms = MapState(pt).replay(st.edits)
+        self.assertEqual(sorted(ms.pix.tolist()), list(range(pt.npix)))
+        tags = {t for _, m in st.meta_flags for t in st.tag_names(m)}
+        self.assertFalse(tags & {"HAP1", "HAP2"}, tags)
 
     def test_homology(self):
         # landing: (scaffold, position, direction out, contig, bp of that contig beyond it)

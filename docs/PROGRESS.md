@@ -2236,3 +2236,23 @@ an hour; the curator expects the sequence is too repetitive for BLAST to say muc
 tagged (H1_scaffold_85, H2_scaffold_96, H2_scaffold_102, H2_scaffold_130, H1_scaffold_138: the GC 0.35
 genome, 1.76 Mb, peaks 46-118 against partners 219-252), the GC 0.22 group flagged, and the smallest
 GC 0.35 pieces (0.06-0.13 Mb, hot spots 134-223) too. icLarUrsu unchanged (no prokaryote calls).
+
+Single haplotype again (2026-11-19). xgTylRafi now has its assembly, the hap2 contig GFA and YaHS
+AGP and a BUSCO table in the fixtures (case: `--fasta`, `--telomere-motif TTAGGG`, `--gfa`,
+`--yahs-agp`). `run --engine adjacency` works in single mode: the same path as allhaps without the
+haplotype alignment, small-scaffold alignment, BUSCO and sex chromosomes; no prefix is a haplotype,
+so nothing is paired or HAP-tagged; a given `--paf` (the assembly against itself) is used for
+repeats and copies. `score_all.py --extra "--engine adjacency"` sweeps single cases too.
+- The hap2 contig GFA has 12 links, none at a YaHS gap: the graph adds nothing here.
+- Rules pass (as before; telo_scan strands change nothing): junctions 25/29 / 41/68, breaks 94% / 47%,
+  89% of 18 chromosomes in one piece, Unloc agreement 83%. Disagreements: 2 extra breaks, 4 wrong
+  joins, 38 missed breaks, 27 missed joins.
+- Solver: level 0 6/11 / 19/68, breaks 62% / 19%; level 0.5 8/15 / 22/68, 54% / 22%; level 1
+  22/34 / 32/68, 39% / 29%; 56% of chromosomes in one piece, Unlocs 6-7%. Level 1: 31 extra breaks,
+  12 wrong joins. Without a second haplotype it has Hi-C and telomeres only, and its Hi-C-only rules
+  are built to be strict about new joins; the rules pass has single-haplotype logic of its own
+  (haplotigs, insertion at gaps, placement). The rules pass stays the default.
+- Review copies: work/review/xgTylRafi (labels rules, solver_l1).
+HAP tags in single mode: neither engine writes them (nor does the curator). The AGP no longer tags
+sub-pixel scaffolds HAP by prefix in single mode (they alone would form a HAP1 assembly next to the
+name-prefixed rest); `asm` tags them only if the savestate uses HAP tags.

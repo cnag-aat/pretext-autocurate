@@ -3,9 +3,13 @@
   "cases": [
     {
       "name": "xgTylRafi",
-      "description": "gastropod, single haplotype",
+      "description": "gastropod, single haplotype; hifiasm hap2 contig graph and YaHS AGP",
       "mode": "single",
-      "run": ["--map", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10_mq0.extensions.HR.pretext"],
+      "run": ["--map", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10_mq0.extensions.HR.pretext",
+              "--fasta", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10.fa", "--telomere-motif", "TTAGGG",
+              "--gfa", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.p_ctg.noseq.gfa",
+              "--yahs-agp", "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10.agp",
+              "--threads", "8", "--work-dir", "{R}/work/xgTylRafi"],
       "references": {"curator": "{F}/xgTylRafi_asm4_run1.hfsm.asm.hic.hap2.yhs_mq10_mq0.extensions.HR.pretext.savestate_4"}
     },
     {

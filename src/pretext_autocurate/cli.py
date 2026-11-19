@@ -263,10 +263,14 @@ def _with_tracks(a, hits):
     return made
 
 
-def _unplaced(pt, st, classes):
+def _unplaced(pt, st, classes, haps=True):
     """Scaffolds under one pixel for the AGP (layout.unplaced_hap_tags), non-target ones tagged
-    Contaminant and nothing else (no HAP tag): PretextView cannot tag what it does not show."""
-    return [(n, ln, ["Contaminant"] if n in classes else tags) for n, ln, tags in unplaced_hap_tags(pt, st)]
+    Contaminant and nothing else (no HAP tag): PretextView cannot tag what it does not show.
+    `haps` False (single haplotype): no HAP tags at all. Neither engine tags HAP there, so
+    pretext-to-asm goes by name for every scaffold; a HAP1 tag on the sub-pixel ones alone would put
+    them in an assembly of their own when the names carry a prefix (H1_ is read as "H1", not HAP1)."""
+    return [(n, ln, ["Contaminant"] if n in classes else (tags if haps else []))
+            for n, ln, tags in unplaced_hap_tags(pt, st)]
 
 
 def _non_target(a, pt, blocks=None):
@@ -374,10 +378,11 @@ def cmd_run(a):
     a.mode = mode
     _load_tracks(a, pt)
     a.non_target = ({}, {})
-    if a.mode == "allhaps":
+    if a.mode == "allhaps" or a.engine == "adjacency":
         from .allhaps import curate_allhaps, write_rows
+        two = a.mode == "allhaps"
         blocks = small = None
-        if a.small_paf or (a.fasta and not a.no_small_align):
+        if two and (a.small_paf or (a.fasta and not a.no_small_align)):
             from .homology import align_small, read_paf
             sp = a.small_paf
             if not sp:
@@ -390,7 +395,8 @@ def cmd_run(a):
                     sys.exit(f"error: {e}")
             small = read_paf(sp, min_mapq=0)        # mapq 0 kept: copies within a haplotype score 0
             print(f"small scaffolds: {len(small)} alignment blocks from {sp}", file=sys.stderr)
-        if a.paf or a.fasta:
+        # single haplotype: only a given --paf (e.g. the assembly against itself: repeats, copies)
+        if a.paf or (two and a.fasta):
             from .homology import align_haplotypes, read_paf, fasta_lengths
             paf = a.paf
             if not paf:
@@ -408,14 +414,14 @@ def cmd_run(a):
             print(f"sequence homology: {len(blocks)} alignment blocks from {paf}", file=sys.stderr)
         _non_target(a, pt, blocks)
         hits = None
-        if a.busco_table:
+        if two and a.busco_table:
             from . import busco
             hits = busco.read_full_tables(a.busco_table)
             known = set(pt.names)
             if hits and not any(l[0] in known for loci in hits.values() for l in loci):
                 sys.exit(f"error: no sequence name in {a.busco_table} matches the map; BUSCO must be run on the same assembly")
             print(f"BUSCO: {len(hits)} genes with complete copies from {a.busco_table}", file=sys.stderr)
-        elif a.miniprot_paf or a.busco_lineage:
+        elif two and (a.miniprot_paf or a.busco_lineage):
             from . import busco
             mp = a.miniprot_paf
             if not mp:
@@ -434,7 +440,7 @@ def cmd_run(a):
         # Sex chromosomes (sexchrom): two sex-linked scaffolds in one haplotype are not in the
         # alignment between haplotypes, so their PARs are looked for by aligning them to each other.
         same = None
-        if "coverage" in pt.graphs:
+        if two and "coverage" in pt.graphs:
             import re
             from . import sexchrom
             groups = sexchrom.same_hap_candidates(pt, blocks, a.hap_regex, level=a.level) if a.fasta and blocks else {}
@@ -480,7 +486,9 @@ def cmd_run(a):
             try:
                 if a.engine == "adjacency":
                     from .solver import solve
-                    rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex, graph_junctions=gj,
+                    # one haplotype: no prefix is a haplotype (no pairs, no HAP tags)
+                    rows, st, info = solve(pt, blocks=blocks, level=lv, hap_regex=a.hap_regex if two else r"(?!)",
+                                           graph_junctions=gj,
                                            no_yahs=a.no_yahs, fine_px=a.fine_px, exclude=set(a.non_target[0]),
                                            end_joins=graph.scaffold_end_joins(lay, ejoins) if ejoins else None)
                     print("adjacency solver: " + ", ".join(f"{k} {v}" for k, v in info.items()), file=sys.stderr)
@@ -497,7 +505,7 @@ def cmd_run(a):
             prefix = os.path.join(out_dir, a.prefix)
             _tag_non_target(a, pt, st, prefix, rows)
             write_rows(rows, prefix + ".decisions.tsv")
-            write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0]))
+            write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0], two))
             _maybe_asm(a, prefix + ".agp", out_dir, pt.names)
             # One savestate per map, each with that map's hash (it covers the file name).
             for path in [m.path for m in maps] + tracked:
@@ -506,7 +514,7 @@ def cmd_run(a):
             n = collections.Counter(r["action"] for r in rows)
             summary.append((lv, n, len(st.edits)))
             nrev = _write_review(rows, prefix + ".review.tsv", "allhaps")
-            _write_run_info(a, prefix + ".run.txt", "allhaps", f"level\t{lv}\n")
+            _write_run_info(a, prefix + ".run.txt", a.mode + ("" if two else " (adjacency)"), f"level\t{lv}\n")
             print(f"level {lv:.2f}\t" + "\t".join(f"{k} {v}" for k, v in sorted(n.items())))
             print(f"edits {len(st.edits)}, painted {len(st.scaffs)}, tags {len(st.meta_flags)}, waypoints {len(st.waypoints)}; "
                   f"{nrev} items to review in {prefix}.review.tsv; outputs in {out_dir}", file=sys.stderr)
@@ -524,7 +532,7 @@ def cmd_run(a):
     prefix = os.path.join(a.out_dir, a.prefix)
     _tag_non_target(a, pt, st, prefix)
     write_decisions(decisions, prefix + ".decisions.tsv")
-    write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0]))
+    write_agp(pt, st, prefix + ".agp", unplaced=_unplaced(pt, st, getattr(a, "non_target", ({}, {}))[0], False))
     _maybe_asm(a, prefix + ".agp", a.out_dir, pt.names)
     tracked = _with_tracks(a, None)
     for path in [m.path for m in maps] + tracked:
@@ -607,7 +615,9 @@ def cmd_asm(a):
     name = a.asm_name or asm.default_name(a.fasta)
     agp = os.path.join(a.out_dir, name + ".pretext.agp")
     from . import contam
-    write_agp(pt, st, agp, unplaced=_unplaced(pt, st, contam.read_list(a.contaminants) if a.contaminants else {}))
+    # sub-pixel scaffolds get HAP tags only if the savestate tags haplotypes at all (two haplotypes)
+    haps = any(t in ("HAP1", "HAP2") for _, m in st.meta_flags for t in st.tag_names(m))
+    write_agp(pt, st, agp, unplaced=_unplaced(pt, st, contam.read_list(a.contaminants) if a.contaminants else {}, haps))
     if bool(a.gfa) != bool(a.yahs_agp) or ((a.utg_gfa or a.fill_gaps) and not a.gfa):
         sys.exit("error: --gfa and --yahs-agp go together (the AGPs say where the graph's contigs are), and "
                  "--utg-gfa / --fill-gaps need both")
@@ -667,8 +677,10 @@ def main(argv=None):
                    help="allhaps: how readily to act, 0 (conservative: only the clearest evidence, flag the rest) to 1 "
                         "(aggressive); moves every act-or-flag threshold together [0.5]")
     p.add_argument("--engine", choices=["rules", "adjacency"], default="rules",
-                   help="allhaps: rules = the step-by-step pass; adjacency = the experimental adjacency solver "
-                        "(contig ends scored and joined best first; solver.py), for comparison [rules]")
+                   help="rules = the step-by-step pass; adjacency = the experimental adjacency solver (contig ends "
+                        "scored and joined best first; solver.py), for comparison. Both modes; in single mode the "
+                        "solver uses Hi-C, telomeres, the hifiasm graph and a given --paf (the assembly against "
+                        "itself), and --sweep works [rules]")
     p.add_argument("--no-yahs", action="store_true",
                    help="adjacency engine: do not use the YaHS layout as evidence (scaffold from the contigs; its "
                         "joins are still reported for comparison)")
