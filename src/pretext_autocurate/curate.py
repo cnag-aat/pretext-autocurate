@@ -14,7 +14,7 @@ import numpy as np
 from .haplotig import detect_haplotigs, detect_contig_haplotigs, Params as HapParams
 from .misjoin import detect_misjoins, weak_junctions, Cut
 from .inversion import detect_inversions, Params as InvParams
-from .overlap import gap_overlaps, overlap_evidence, resolve_overlaps
+from .overlap import classify_candidates, gap_overlaps, overlap_evidence, resolve_overlaps
 from .join import find_joins
 from .pretextio import SegmentedMap
 from .savestate import Edit, BREAK_DELTA
@@ -322,6 +322,76 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
     if fasta and do_cuts and raw.graphs.get("gap") is not None:
         gap_rows = gap_overlaps(raw, fasta, minimap2, threads)
         exact += [r["switch"] for r in gap_rows if r["switch"]]
+    # Candidate haplotigs aligned to where their Hi-C copy line points (curator, 2026-11-20:
+    # always, not only at gaps): a confirmed copy, nothing, or a gap fill whose two ends copy the
+    # gap's flanks (xgTylRafi scaffold_29 into scaffold_1's 18.23 Mb gap, '-', its first 236 kb a
+    # copy of the flank after it). A fill's copies of 5 px or more are cut off at the base.
+    copy_calls, fills = {}, []
+    if fasta and do_cuts and do_joins:
+        vtc = SegmentedMap(raw, sorted(c.after_px for c in cuts if c.apply))
+        taken = {r["tside"].name for r in overlaps if r["apply"]} | {r["kside"].name for r in overlaps if r["apply"]}
+        cands = []
+        for c in detect_haplotigs(vtc, hap_params or HapParams(), Signal(vtc)):
+            if not c.partner or c.call in ("too_small", "none"):
+                continue
+            par, off = vtc.parent_of(c.scaffold)
+            s = raw.names.index(par)
+            if off != 0 or vtc.scaffold_npix[vtc.names.index(c.scaffold)] != raw.scaffold_npix[s] or par in taken:
+                continue                        # whole input scaffolds only
+            ppar, poff = vtc.parent_of(c.partner)
+            if ppar != par:
+                cands.append((par, ppar, max(0, int(c.partner_bp - 1 + poff * raw.bp_per_pix))))
+        copy_calls = classify_candidates(fasta, cands, minimap2, threads)
+        N_, G_ = float(raw.npix), float(raw.total_len)
+        for name, cc in copy_calls.items():
+            if cc.kind != "gap_fill":
+                continue
+            if (cc.fill[1] - cc.fill[0]) / raw.bp_per_pix < 5:
+                # mostly copy, with a sliver of its own over the gap: a haplotig of that region (the
+                # curator tagged such pieces whole; cutting them cost xgTylRafi break precision 95% -> 66%)
+                cc.kind = "copy"
+                continue
+            if min(cc.left[1] - cc.left[0], cc.right[1] - cc.right[0]) / raw.bp_per_pix < 2:
+                # a copy under 2 px at one junction is thin evidence for the place (xgTylRafi scaffold_23:
+                # 41 and 18 kb at 4.7%; the curator kept it as an Unloc of that chromosome): proposed
+                cc.kind = "fill_weak"
+                continue
+            s, sp = raw.names.index(name), raw.names.index(cc.partner)
+            a, n = int(raw.scaffold_start[s]), int(raw.scaffold_npix[s])
+            rec = dict(cc=cc, s=s, q_left=int(raw.scaffold_start[sp]) + int(max(cc.gap[0] - 1, 0) / raw.bp_per_pix))
+            L = int(raw.scaffold_len_bp()[s])
+            # Gapless junctions (asm): the flank runs to its switch base, then the piece goes on past
+            # the identical base; at the other junction the piece runs to its switch and the flank
+            # goes on. '+': the piece's start copy meets the left flank; '-': its end copy does.
+            for copy, sw, at_start in ((cc.left, cc.left_switch, True), (cc.right, cc.right_switch, False)):
+                if sw is None:
+                    continue
+                q_sw, t_sw = sw
+                cut = (copy[1] - copy[0]) / raw.bp_per_pix >= 5
+                left_junction = at_start == (cc.strand == "+")
+                if left_junction:               # flank before the gap, then the piece
+                    row = dict(kind="switch", scaffold=cc.partner, px_bp=cc.gap[0], bp=t_sw + 1, partner=name,
+                               partner_bp=q_sw + 1)
+                else:                           # the piece, then the flank after the gap
+                    face = (copy[1] + 1 if at_start else copy[0]) if cut else (1 if at_start else L)
+                    row = dict(kind="switch", scaffold=name, px_bp=face, bp=q_sw + 1, partner=cc.partner,
+                               partner_bp=t_sw + 1)
+                exact.append(dict(row, method="alignment", src="fill",
+                                  evidence=f"gap fill of {cc.partner}'s gap at {cc.gap[0] + 1:,}: {name} and {cc.partner} "
+                                           f"identical around the switch"))
+            for (x0, x1), at_start in ((cc.left, True), (cc.right, False)):
+                if (x1 - x0) / raw.bp_per_pix < 5:
+                    continue                    # a few px: left in the piece (the switch above trims it)
+                bp = x1 if at_start else x0     # the copy ends here (cut after this base)
+                q = a + int(round(bp / raw.bp_per_pix)) - 1
+                if a <= q < a + n - 1:
+                    cuts.append(Cut(name, q, bp, False, float("nan"), float("nan"), True,
+                                    f"end of its copy of {cc.partner} by the gap at {cc.gap[0] + 1:,} bp, placed by "
+                                    f"the sequence; the rest fills that gap (see the fill_gap row)"))
+                    exact.append(dict(kind="cut", scaffold=name, px_bp=int((raw.rel_coord[q] + 1) * G_ / N_), bp=bp,
+                                      partner="", partner_bp=0, method="alignment", src="fill",
+                                      evidence=f"copy of {cc.partner} by its gap at {cc.gap[0] + 1:,} ends here"))
+            fills.append(rec)
     cuts.sort(key=lambda c: c.after_px)
     # from here on every applied cut is a scaffold end: pieces are "scaffolds" of pt
     pt = SegmentedMap(raw, [c.after_px for c in cuts if c.apply])
@@ -372,6 +442,16 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
         rec["units"] = (Cp, R, K)
         inv_units |= {Cp, R, K}
         ov_haps[Cp] = (K, rec)
+    # Gap fills: the middle piece goes into the gap in the strand the alignment gives, the copies
+    # cut off its ends are Haplotigs of that scaffold; none of them is placed by contact.
+    for f in fills:
+        cc, s = f["cc"], f["s"]
+        a, n = int(raw.scaffold_start[s]), int(raw.scaffold_npix[s])
+        mid = a + min(n - 1, int((cc.fill[0] + cc.fill[1]) / 2 / raw.bp_per_pix))
+        f["M"] = int(pt.orig_scaffold[mid])
+        f["A"] = int(pt.orig_scaffold[f["q_left"]])
+        f["copies"] = sorted({int(pt.orig_scaffold[p]) for p in range(a, a + n)} - {f["M"]})
+        inv_units |= {f["M"], *f["copies"]}
     sg = Signal(pt)                     # new Signal: decay and insulation respect the cuts
     haps = {c.scaffold: c for c in detect_haplotigs(pt, hap_params or HapParams(), sg)}
     places = {p.scaffold: p for p in place_scaffolds(pt, place_params or PlaceParams(), sg, junction_contact=jc)
@@ -442,7 +522,7 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                       "", ev + "; not closed: the copy stops short of the gap or has no identical "
                                                   "stretch to switch at"))
     for row in exact:
-        if row.get("src") == "gap":
+        if row.get("src") in ("gap", "fill"):
             row["applied"] = True
         else:
             row["applied"] = any(r["apply"] and r.get("linked", False) and r["tside"].name in (row["scaffold"], row["partner"])
@@ -463,6 +543,33 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
             for u, e in ((j.a, j.a_end), (j.b, j.b_end)):
                 proposals.append(int(pt.scaffold_start[u] + (0 if e == "h" else pt.scaffold_npix[u] - 1)))
     n_cut_rows = len(decisions)
+    for name, cc in copy_calls.items():          # fills with a thin copy at one end: proposed only
+        if cc.kind != "fill_weak":
+            continue
+        sp = raw.names.index(cc.partner)
+        q = int(raw.scaffold_start[sp]) + int(max(cc.gap[0] - 1, 0) / raw.bp_per_pix)
+        proposals.append(q)
+        decisions.append(Decision(name, 0, cc.fill[1] - cc.fill[0], "flag_fill_gap", cc.partner, cc.gap[0] + 1, cc.strand,
+                                  "low", f"its ends look like copies of the two sides of {cc.partner}'s gap at "
+                                         f"{cc.gap[0] + 1:,} bp ({cc.left[1] / 1e3:.0f} kb and "
+                                         f"{(cc.right[1] - cc.right[0]) / 1e3:.0f} kb, {cc.divergence:.1%} divergence, strand "
+                                         f"{cc.strand}): it may fill that gap, but a copy under 2 px is thin evidence; "
+                                         f"not moved (waypoint at the gap)"))
+    for f in fills:                              # gap fills: the middle in, the copies as Haplotigs
+        cc, A = f["cc"], f["A"]
+        moved[f["M"]] = ("", A, f["q_left"], cc.strand)
+        decisions.append(Decision(pt.names[f["M"]], int(pt.scaffold_npix[f["M"]]), cc.fill[1] - cc.fill[0], "fill_gap",
+                                  pt.names[A], 0, cc.strand, "high",
+                                  f"its ends are copies of the two sides of {cc.partner}'s gap at {cc.gap[0] + 1:,} bp "
+                                  f"({cc.left[1] / 1e3:.0f} kb and {(cc.right[1] - cc.right[0]) / 1e3:.0f} kb, "
+                                  f"{cc.divergence:.1%} divergence, strand {cc.strand}): its own "
+                                  f"{(cc.fill[1] - cc.fill[0]) / 1e3:.0f} kb ({cc.fill[0] / 1e6:.2f}-{cc.fill[1] / 1e6:.2f} "
+                                  f"Mb) inserted into the gap; copies of 5 px or more cut off as Haplotigs"))
+        for c in f["copies"]:
+            moved[c] = ("Haplotig", A, -1, "+")
+            decisions.append(Decision(pt.names[c], int(pt.scaffold_npix[c]), 0, "attach_haplotig", pt.names[A], 0, "",
+                                      "high", f"copy of the side of {cc.partner}'s gap at {cc.gap[0] + 1:,} bp, cut off "
+                                              f"the piece that fills it (see the fill_gap row)"))
     for Cp, (K, rec) in ov_haps.items():         # the copies cut off by applied overlaps
         if not rec.get("linked", False):
             continue
@@ -476,7 +583,14 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
         ev = f"cis {pl.cis:.2f}, best/next anchor {pl.ratio:.2f}, coverage {pl.cov:.2f}"
         if h is not None and h.partner:
             ev += f"; line/own {h.line_over_own:.2f} at {h.partner}:{h.partner_bp}, partner coverage {h.partner_cov:.2f}"
+        cc = copy_calls.get(pt.parent_of(name)[0]) if pt.parent_of(name)[1] == 0 else None
+        if cc is not None:
+            ev += (f"; sequence: {cc.aligned:.0%} of it aligns in order to {cc.partner} there at {cc.divergence:.1%} "
+                   f"divergence" if cc.strand else f"; sequence: nothing aligns to {cc.partner} there")
         conf = "high" if name in forced else h.call.split("_")[1] if is_hap else ""
+        if h is not None and h.call == "haplotig_low" and not is_hap and cc is not None and cc.kind == "copy":
+            is_hap, conf = True, "medium"          # a borderline call the sequence confirms
+            ev += ": a haplotypic copy (borderline on contact and coverage, confirmed by the sequence)"
         if name in forced:
             ev += "; contig inside a scaffold, cut out at its gaps"
         if h is not None and h.call == "haplotig_low" and not is_hap:
@@ -538,6 +652,8 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
     for d in decisions[n_cut_rows:]:
         for field in ("scaffold", "target"):
             name = getattr(d, field)
+            if name and name not in pt.names:
+                continue                        # already an input scaffold (flag_fill_gap rows)
             if name:
                 par, off = pt.parent_of(name)
                 if field == "target":

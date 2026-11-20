@@ -87,7 +87,9 @@ class TestAllhaps(unittest.TestCase):
         r = [r for r in self.rows if r["action"] == "pair_unequal"]
         self.assertEqual({(x["scaffold"], x["partner"]) for x in r}, {("H1_scaffold_3", "H2_scaffold_8")})   # Z, W
         self.assertEqual(r[0]["tag"], "HAP1/HAP1")
-        self.assertEqual(r[0]["strand"], "+")
+        # both laid out PAR first (curator, 2026-11-20): the Z's PAR is at its start, the W's at its
+        # end as assembled, so the W is turned
+        self.assertEqual(r[0]["strand"], "-")
 
     def test_no_prefix_mixing_and_layout(self):
         ms = MapState(self.pt).replay(self.st.edits)

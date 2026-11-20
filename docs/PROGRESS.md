@@ -2439,3 +2439,40 @@ The same in allhaps; single-mode fixes (2026-11-19, evening).
   curator re-phased that scaffold to HAP1 instead).
 - Not tested on a toy: `synth.toy_map` puts a gap between pieces and allhaps cuts it as a misjoin
   first, so the allhaps inversion path needs a contig-internal inversion the toy cannot make.
+
+Curator's review of the level 1 savestates (2026-11-20).
+- qqTroRaco: H1_scaffold_76 left unplaced (insert_candidate; it belongs with H1_scaffold_45 /
+  H2_scaffold_42: MQ0 contact 55.8 against at most 5.2 elsewhere); H2_scaffold_69 + H1_scaffold_72
+  + H1_scaffold_2 18.2-21.8 Mb laid out as a small pair of their own; H1_scaffold_62 10.05-13.51 Mb
+  cut off and left unpaired; Scaffold_100 (H2_scaffold_6 pieces) anti-parallel to Scaffold_99.
+  `allhaps/shrapnel.py`: shrapnel specific to one pair (contact >= 3x any other pair) -> Unloc of
+  its same-haplotype copy (with the pieces joined in its chain); small pairs (both copies < 10 Mb)
+  whose copies both belong to a larger pair dissolved into it; second copy's direction from the
+  arranged chains' alignment. All four cases now as the curator wants. qqTroRaco Unloc agreement
+  0% -> 46 / 42 / 50% (levels 0 / 0.5 / 1), chromosomes >= 90% in one piece 92 -> 94%, 96 -> 98%.
+- bAegFun: the W (H2_scaffold_8) ran the other way from the Z: sex chromosomes are now laid out
+  PAR first (sexchrom par_mask). H1_scaffold_40 should be turned against its mate H1_scaffold_33:
+  two H1 scaffolds, not in the H2-vs-H1 alignment, and the small-scaffold alignment's strand
+  decided; the Hi-C line is forwards (0.96, 36 rows), but H1_scaffold_31 in the same chain runs
+  the other way, so the whole chain read 'unclear'. Now one vote per piece weighted by rows, and
+  a piece against the majority is turned in place (only where the Hi-C line decides the pair).
+  bAegFun scores unchanged.
+- xgTylRafi scaffold_29 belongs in scaffold_1's 18.23 Mb gap, '-', its first 260 kb cut off as a
+  haplotig (curator). Its first 236 kb align to scaffold_1 just after the gap (2.8-5.5%), its last
+  78 kb just before it (0.9-2.5%), 392 kb of its own between them. Curator: always align
+  candidate haplotigs. `overlap.classify_candidates`: every small piece with a copy-line partner
+  (233 on xgTylRafi, in parallel) aligned there: gap_fill / copy / none. A fill needs >= 5 px of
+  its own sequence (10 fills, most 0-39 kb of own sequence, cost break precision 95% -> 66%;
+  such pieces are haplotigs, as the curator tagged them) and copies >= 2 px at both ends
+  (scaffold_23, 41 and 18 kb at 4.7%: the curator kept it Unloc; now flag_fill_gap). Six
+  borderline haplotigs confirmed by the sequence; five are Haplotigs in the curation too.
+- Gapless fills: switch rows at both junctions (identical run nearest the fill; scaffold_29: its
+  base 643,687 = scaffold_1 18,212,244 and 117,883 = 18,376,915, both identical on the reverse
+  strand). `breaks.apply_switches` rewritten on one rule: at each switch a line may gain bases (they
+  leave the one-line haplotig that held them) or lose them (they go to that haplotig, else a new
+  one: the other path through the bubble). Overlaps, gaps and fills are cases of it.
+- telo_scan by default (curator): with --fasta it runs and decides; the motif from the scaffold
+  ends when not given (`tracks.detect_motif`: TTTGGGTTAG, TTAGGG, TTAGGG, TTAGG on icLarUrsu,
+  xgTylRafi, bAegFun, qqTroRaco, 1-2 s each); --telomere-from-map to decide on the map's track.
+- The guard against a collapsed tandem repeat looking like a haplotypic copy needs read phasing
+  (how many haplotypes the reads show there): not an input yet.

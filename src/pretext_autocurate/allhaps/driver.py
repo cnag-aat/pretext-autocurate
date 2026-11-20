@@ -10,7 +10,7 @@ from .common import Thresholds, _signal, _union, split_block
 from .evidence import _graph_evidence, _unitig_evidence
 from .pairing import _quality, merge_pairs, pair_homologs, same_prefix_pairs
 from .sites import telomere_sites
-from . import chromjoin, graphjoin, insert, inversions, selfdup, seqfix
+from . import chromjoin, graphjoin, insert, inversions, selfdup, seqfix, shrapnel
 from .small import place_small
 from .state import Run
 
@@ -977,6 +977,20 @@ def _layout(run_):
                 px[a - start[s]:b - start[s] + 1] = px[a - start[s]:b - start[s] + 1][::-1].copy()
         px = turn_inversions(px)
         return px[::-1] if rev else px
+    # Shrapnel specific to one pair: an Unloc of that pair (shrapnel.py). Small pairs of their own
+    # whose copies both belong to a larger pair are laid out that way instead of as a pair.
+    attached_u = {c["u"] for v in attach.values() for c in v}
+    sg_lay = _signal(raw)
+    npx_total = lambda c: len(pixels(c))
+    sh_attach, sh_dissolved, sh_rows = shrapnel.assign(
+        run_, main, pixels, sg_lay, run_.sexfrac, set(joined) | attached_u | fd_units)
+    main = [p for p in main if id(p) not in sh_dissolved]
+    sh_units = {u for v in sh_attach.values() for u in v}
+    for c, us in sh_attach.items():
+        for u in us:
+            attach.setdefault(c, []).append(dict(u=u, copy=c, action="unloc", third_copy=False, evidence="",
+                                                 score="", ratio=""))
+    rows += sh_rows
     # pairs largest first, the two copies side by side; paint ids 2k+1 / 2k+2
     for k, p in enumerate(sorted(main, key=lambda p: -(npx[p.a] + npx[p.b]))):
         qa, ga, ta = _quality(pt, p.a, info["tel_thr"])
@@ -1024,9 +1038,48 @@ def _layout(run_):
             tags = ("HAP1", "HAP2")
         # an unequal pair shares only a small region (e.g. a PAR): too little to orient by
         flip = (not p.same_strand) and (p.kind == "pair" or id(p) in sex_like)
+        rev_first = False
+        if p.kind == "pair" or id(p) in sex_like:
+            # the chains as arranged, not the input scaffolds, say which way the second runs: their
+            # alignment, else a clear Hi-C homology line, else the pairing's strand (shrapnel.py)
+            o = shrapnel.orient_pair(raw, blocks, pixels(first), pixels(second))
+            by_hic = o is None
+            if by_hic:
+                o = shrapnel.hic_dir(sg_lay, pixels(first), pixels(second))
+            if o is not None:
+                flip = o
+            if by_hic and o is not None:
+                # a piece of either chain whose own line runs the other way from the majority is
+                # turned in place (curator, 2026-11-20: bAegFun H1_scaffold_40 against H1_scaffold_33,
+                # while H1_scaffold_31 in the same chain runs with the majority)
+                # pieces already turned for a reason stay: telomere tips (bAegFun H1_scaffold_2's end
+                # piece sits where the chromosome folds in both haplotypes, and its line runs the other
+                # way) and inversions called earlier
+                held = list(flips) + list(inv_flips)
+                for c, other in ((first, second), (second, first)):
+                    for (lo, hi), d, n_ in shrapnel.hic_runs(sg_lay, pixels(c), pixels(other)):
+                        if any(lo <= b and a <= hi for a, b in held):
+                            continue
+                        if d != o:
+                            inv_flips.append((lo, hi))
+                            nm = pt.names[int(pt.orig_scaffold[lo])]
+                            rows.append(dict(action="inversion", scaffold=nm, length_mb=round((hi - lo + 1) * bpp / 1e6, 2),
+                                             partner=pt.names[other], strand="-", tag="", score="", next_best="",
+                                             evidence=f"turned in place: its Hi-C homology line with {pt.names[other]} "
+                                                      f"({n_} rows) runs the other way from the rest of the pair's"))
+        par = sx.get("par_mask")
+        if p.kind == "unequal" and par is not None:
+            # sex chromosomes: each laid out with its PAR first (curator, 2026-11-20: the owl's W
+            # ran the other way from its Z)
+            def par_last(c):
+                m = np.nonzero(par[pixels(c)] == 2)[0]
+                return None if not len(m) else bool(m.mean() > npx_total(c) / 2)
+            rf, rs = par_last(first), par_last(second)
+            if rf is not None or rs is not None:
+                rev_first, flip = bool(rf), bool(rs)
         paint_of[first], paint_of[second] = 2 * k + 1, 2 * k + 2
         tag_of[first], tag_of[second] = tags
-        for copy, rev in ((first, False), (second, flip)):
+        for copy, rev in ((first, rev_first), (second, flip)):
             order.append((copy, rev))
             for v, u_ in joined.items():
                 if u_ == copy:
@@ -1035,10 +1088,12 @@ def _layout(run_):
             # unlocs: at the end of their copy of the chromosome, painted and tagged with it
             for c in sorted(attach.get(copy, []), key=lambda c: -npx[c["u"]]):
                 order.append((c["u"], False))
-                paint_of[c["u"]], tag_of[c["u"]] = paint_of[copy], tag_of[copy]
-                unloc_units.add(c["u"])
+                # with the pieces in its own chain (an attached small pair keeps its chain)
+                for v in [c["u"]] + [v for v, x in joined.items() if x == c["u"]]:
+                    paint_of[v], tag_of[v] = paint_of[copy], tag_of[copy]
+                    unloc_units.add(v)
         for e in sorted(extra.get(p.a, []) + extra.get(p.b, []), key=lambda e: -npx[e.b]):
-            if e.b in joined or e.b in fd_units:           # in a chain, or laid out as a false duplicate
+            if e.b in joined or e.b in fd_units or e.b in sh_units:   # in a chain, a false duplicate, or an unloc
                 tag_of.setdefault(e.b, tag_of[second] if hap[e.b] == hap[second] else tag_of[first])
                 continue
             order.append((e.b, not e.same_strand))

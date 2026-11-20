@@ -115,6 +115,73 @@ def from_map(pt):
     return out
 
 
+_COMP = str.maketrans("ACGT", "TGCA")
+
+
+def _unit_name(u):
+    """The rotation of a repeat unit used as its name: most leading Ts (TTAGGG, TTTGGGTTAG), then
+    alphabetical."""
+    rots = [u[i:] + u[:i] for i in range(len(u))]
+    lead = lambda r: len(r) - len(r.lstrip("T"))
+    return max(rots, key=lambda r: (lead(r), [-ord(c) for c in r]))
+
+
+def _primitive(u):
+    """The unit is not a shorter unit repeated, and is not near-homopolymer."""
+    k = len(u)
+    if any(k % p == 0 and u == u[:p] * (k // p) for p in range(1, k)):
+        return False
+    return max(u.count(c) for c in "ACGT") <= k - 2
+
+
+def detect_motif(fasta, n_scaffolds=30, end_bp=20_000, kmin=5, kmax=12, min_ends=4):
+    """The telomere motif from the scaffold ends, when none is given (curator, 2026-11-20: "if
+    you inspect the ends of the scaffolds you can deduce the telomeres").
+
+    In the last `end_bp` of each of the `n_scaffolds` largest scaffolds (and the first, read as
+    the reverse complement), tandem arrays of each period from kmin to kmax are found (a base
+    equal to the one a period later, over at least three periods). Each array's unit is named by
+    its rotation (`_unit_name`); a telomere is the same unit read 5'->3' towards the scaffold end
+    at both ends. The winner has the most array sequence among units seen at >= `min_ends` scaffold
+    starts and >= `min_ends` ends, and must hold over half of all array sequence of qualifying
+    units. Returns (motif or None, evidence text)."""
+    from .graph import Faidx
+    fa = Faidx(fasta)
+    if fa.gz:
+        return None, "the FASTA is gzipped: no motif detection (give --telomere-motif)"
+    names = sorted(fa.idx, key=lambda n: -fa.idx[n][0])[:n_scaffolds]
+    names = [n for n in names if fa.idx[n][0] >= 4 * end_bp]
+    bp, starts, ends = {}, {}, {}
+    for n in names:
+        L = fa.length(n)
+        for at_end, seq in ((False, fa.fetch(n, 0, end_bp)[::-1].translate(_COMP)), (True, fa.fetch(n, L - end_bp, L))):
+            s = np.frombuffer(seq.encode(), dtype=np.uint8)
+            seen = set()
+            for k in range(kmin, kmax + 1):
+                eq = s[:-k] == s[k:]
+                # runs of eq at least 2k long: arrays of >= 3 copies of a period-k unit
+                d = np.diff(np.concatenate(([0], eq.astype(np.int8), [0])))
+                for a, b in zip(np.nonzero(d == 1)[0], np.nonzero(d == -1)[0]):
+                    if b - a < 2 * k:
+                        continue
+                    u = seq[a:a + k]
+                    if "N" in u or not _primitive(u):
+                        continue
+                    u = _unit_name(u)
+                    bp[u] = bp.get(u, 0) + int(b - a + k)
+                    seen.add(u)
+            for u in seen:
+                (ends if at_end else starts)[u] = (ends if at_end else starts).get(u, 0) + 1
+    ok = {u: v for u, v in bp.items() if starts.get(u, 0) >= min_ends and ends.get(u, 0) >= min_ends}
+    if not ok:
+        return None, f"no tandem unit at >= {min_ends} starts and ends of the {len(names)} largest scaffolds"
+    best = max(ok, key=ok.get)
+    share = ok[best] / sum(ok.values())
+    why = (f"{best}: {ok[best]:,} bp of arrays at the ends of the {len(names)} largest scaffolds, "
+           f"{starts[best]} starts and {ends[best]} ends, {share:.0%} of the array sequence of units at both")
+    return (best, why) if share >= 0.5 else (None, why + "; not clear enough (needs 50%)")
+
+
 def run_telo_scan(fasta, workdir, motif, script=None, threads=8):
     """telo_scan.py on the assembly: the copy bundled in `vendor/` (CNAG, cnag-aat/scripts),
     or `script` if given. Returns {'telomere_5p': bedgraph, 'telomere_3p': bedgraph}."""

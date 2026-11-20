@@ -122,6 +122,37 @@ class Switches(unittest.TestCase):
             self.assertEqual(h.fetch("H_1", 0, 10 ** 6), X[1100:1250] + X[850:1000])
 
 
+class FillSwitches(unittest.TestCase):
+    def test_gap_fill_both_junctions(self):
+        """P fills X's gap: P's first 200 bp copy the end of the left flank (cut off as haplotig H_1),
+        its last 200 bp the start of the right flank (left on P)."""
+        rng = random.Random(3)
+        A, B = rand_seq(1000, rng), rand_seq(1000, rng)
+        X = A + "N" * 100 + B
+        P = mutate(A[800:], [20, 180]) + rand_seq(300, rng) + mutate(B[:200], [30, 170])
+        with tempfile.TemporaryDirectory() as d:
+            inp = os.path.join(d, "in.fa")
+            write_fa(inp, {"X": X, "P": P})
+            fa = Faidx(inp)
+            prim = {"SUPER_1": [AgpRow("SUPER_1", "W", "X", 1, 1000, "+", ()), AgpRow("SUPER_1", "U", "100", 0, 0, "", GAP),
+                                AgpRow("SUPER_1", "W", "P", 201, 700, "+", ()), AgpRow("SUPER_1", "U", "100", 0, 0, "", GAP),
+                                AgpRow("SUPER_1", "W", "X", 1101, 2100, "+", ())]}
+            hap = {"H_1": [AgpRow("H_1", "W", "P", 1, 200, "+", ())]}
+            write_agp_rows(os.path.join(d, "a.1.primary.agp"), ["##agp-version\t2.1\n"], prim)
+            write_agp_rows(os.path.join(d, "a.1.haplotigs.agp"), ["##agp-version\t2.1\n"], hap)
+            write_fa(os.path.join(d, "a.1.primary.fa"), {"SUPER_1": X[:1000] + "N" * 100 + P[200:] + "N" * 100 + X[1100:]})
+            write_fa(os.path.join(d, "a.1.haplotigs.fa"), {"H_1": P[:200]})
+            # A[899] (X base 900) is P[99] (base 100); P[599] (base 600) is B[99] (X base 1200)
+            rows = [dict(kind="switch", scaffold="X", px_bp=1000, bp=900, partner="P", partner_bp=100),
+                    dict(kind="switch", scaffold="P", px_bp=700, bp=600, partner="X", partner_bp=1200)]
+            self.assertEqual(breaks.apply_switches(d, fa, rows, []), 2)
+            out = Faidx(os.path.join(d, "a.1.primary.fa"))
+            self.assertEqual(out.fetch("SUPER_1", 0, 10 ** 6), X[:900] + P[100:600] + X[1200:])
+            h = Faidx(os.path.join(d, "a.1.haplotigs.fa"))
+            self.assertEqual(h.fetch("H_1", 0, 10 ** 6), P[:100] + X[900:1000])     # the copy left, plus X's dropped end
+            self.assertEqual(h.fetch("H_2", 0, 10 ** 6), X[1100:1200] + P[600:])    # the other junction's bubble path
+
+
 @unittest.skipUnless(os.path.exists(LAR) and os.path.exists(LAR_FA), "missing fixture")
 class LarinusOverlaps(unittest.TestCase):
     """icLarUrsu.pri.yahs: scaffold_16 0.26-6.32 Mb is a 0.1-3% divergent copy of scaffold_22's last

@@ -200,11 +200,28 @@ def _load_tracks(a, pt):
     # Given files win; the tools run only for what is missing (and their outputs are cached).
     work = a.work_dir or os.path.join(a.out_dir, "work")
     try:
-        if a.telomere_motif and not (a.telomere_5p and a.telomere_3p):
-            if not a.fasta:
-                sys.exit("error: --telomere-motif needs --fasta (or give --telomere-5p/--telomere-3p)")
-            print(f"telomeres: running telo_scan.py for {a.telomere_motif} (cached in {work})", file=sys.stderr)
-            files.update(tracks.run_telo_scan(a.fasta, work, a.telomere_motif, a.telo_scan, a.threads))
+        # telo_scan.py decides by default whenever there is sequence (curator, 2026-11-20): the map's
+        # own telomere track stays in the map but is used only with --telomere-from-map, or with no
+        # --fasta. The motif: --telomere-motif, else detected from the scaffold ends.
+        a.telomere_source = "map"
+        if a.telomere_5p and a.telomere_3p:
+            a.telomere_source = "files"
+        elif a.telomere_motif and not a.fasta:
+            sys.exit("error: --telomere-motif needs --fasta (or give --telomere-5p/--telomere-3p)")
+        elif a.fasta and not getattr(a, "telomere_from_map", False):
+            motif = a.telomere_motif
+            if not motif:
+                motif, why = tracks.detect_motif(a.fasta)
+                print(f"telomeres: motif from the scaffold ends: {why}", file=sys.stderr)
+                if motif:
+                    a.telomere_motif = motif         # recorded in run.txt
+                else:
+                    print("warning: no telomere motif found at the scaffold ends; using the map's telomere track "
+                          "(give --telomere-motif)", file=sys.stderr)
+            if motif:
+                print(f"telomeres: running telo_scan.py for {motif} (cached in {work})", file=sys.stderr)
+                files.update(tracks.run_telo_scan(a.fasta, work, motif, a.telo_scan, a.threads))
+                a.telomere_source = f"telo_scan {motif}"
         if a.red and not a.repeats:
             if not a.fasta:
                 sys.exit("error: --red needs --fasta (or give --repeats BED)")
@@ -713,8 +730,12 @@ def main(argv=None):
                         "resolution, down to this many pixels, instead of merging them into a neighbour (0: off) [0]")
     p.add_argument("--sweep", help="allhaps: comma-separated levels, e.g. 0,0.25,0.5,0.75,1: one output directory and "
                                    "savestate per level (OUT_DIR/level_X.XX) and a summary table, to pick a starting point")
-    p.add_argument("--telomere-motif", help="run telo_scan.py (CNAG, bundled) on --fasta for this motif (e.g. TTAGGG for "
-                                            "vertebrates, TTAGG for most arthropods) and use telomeres by strand")
+    p.add_argument("--telomere-motif", help="the telomere motif for telo_scan.py (CNAG, bundled), e.g. TTAGGG for "
+                                            "vertebrates, TTAGG for most arthropods. With --fasta, telo_scan runs "
+                                            "anyway and decides (telomeres by strand); without this option the motif "
+                                            "is detected from the scaffold ends")
+    p.add_argument("--telomere-from-map", action="store_true",
+                   help="decide on the map's own telomere track instead of running telo_scan.py on --fasta")
     p.add_argument("--telo-scan", help="use this telo_scan.py instead of the bundled copy")
     p.add_argument("--telomere-5p", help="existing telo_scan.py 5p_telomere bedgraph (with --telomere-3p)")
     p.add_argument("--telomere-3p", help="existing telo_scan.py 3p_telomere bedgraph (with --telomere-5p)")

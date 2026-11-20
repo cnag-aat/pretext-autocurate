@@ -180,6 +180,16 @@ Two haplotypes (`allhaps`):
   level's thresholds and the segment aligns to the other haplotype in the other direction from
   its flanks; at a scaffold end that alignment is required. The same pattern at the same place
   in both haplotypes is folding of the chromosome, not a misassembly (`flag_inversion`).
+- **Shrapnel** specific to one homolog pair (MQ0 contact with it at least 3x that with any other
+  pair) goes with that pair as an `Unloc` of its same-haplotype copy, even when nothing says
+  where in it: pieces in no pair (including a piece cut off a scaffold), further pieces
+  homologous to a scaffold, and small pairs of their own (both copies under 10 Mb) whose two
+  copies both belong to a larger pair. A curator who wants to localise them finds them next
+  to their chromosome.
+- **Which way the second copy runs** is read from the two chains as arranged: their alignment,
+  else a clear Hi-C homology line (one vote per piece, weighted by rows; a piece whose own line
+  runs the other way from the majority is turned in place), else the pairing's strand. Sex
+  chromosomes are laid out with their PAR first.
 - Flags (does not change): sites where both sides belong together, places where the two
   haplotypes disagree, unloc candidates with one line of evidence, scaffolds with no homolog.
 
@@ -202,6 +212,16 @@ coverage; borderline ones highlighted), and, with `--fasta`:
   cut. Without `--fasta`, or when the sequence and the map disagree on the copy, it is proposed.
 - **Gaps with a copy on both sides** (`close_gap`): the sequence after a gap aligns in order
   with the sequence before it, up to the gap. Nothing changes on the map; `asm` closes the gap.
+- **Candidate haplotigs are always aligned** to where their Hi-C copy line points. The
+  alignment says what each is: a copy (a borderline haplotig call is then confirmed), nothing
+  (said in the row), or a **gap fill** (`fill_gap`): its two ends are copies of the two sides
+  of a gap there and its own sequence between them fills it. The piece goes into the gap in
+  the strand the alignment gives, copies of 5 px or more are cut off at the base and tagged
+  `Haplotig`, and `asm` joins both junctions without a gap. A fill needs at least 5 px of its
+  own sequence (a piece that is nearly all copy is a haplotig) and copies of at least 2 px at
+  both ends; otherwise it is proposed (`flag_fill_gap`). A collapsed tandem repeat can look
+  like a copy; telling it from a real haplotype needs read phasing, which the tool does not
+  take yet.
 
 Cuts the sequence placed, and gapless joins, are written to `autocurate.breaks.tsv`. `asm
 --breaks` (and `run --pretext-to-asm`) uses them: a cut moves from its pixel (tens of kb) to
@@ -220,7 +240,7 @@ in PretextView keeps its pixel position. `<name>.exact_edits.tsv` lists what was
 | `--busco-table H1=hap1.full_table.tsv --busco-table H2=hap2.full_table.tsv` | existing BUSCO results (one per haplotype, or one on the diploid assembly): tie-breaker for HAP1, false-duplication candidates. Never decisive alone |
 | `--busco-lineage`, `--miniprot-paf` | let the tool find BUSCO genes itself (slow) |
 | `--repeats BED`, `--red` | a repeat track (e.g. from Red); `--red` runs Red on each haplotype of `--fasta` (about 25 min for a 2.7 Gb assembly) |
-| `--telomere-motif MOTIF` | runs the bundled telo_scan.py (CNAG) on `--fasta` for telomeres by strand (e.g. TTAGGG vertebrates, TTAGG most arthropods); tells two chromosome ends joined from an inverted end piece. A few minutes for a 4 Gb assembly. `--telomere-5p/3p` take existing telo_scan bedgraphs; maps that already carry its 5p/3p tracks are read directly |
+| `--telomere-motif MOTIF` | the telomere motif for the bundled telo_scan.py (CNAG), e.g. TTAGGG vertebrates, TTAGG most arthropods. **With `--fasta`, telo_scan runs and decides by default** (telomeres by strand; a few minutes for a 4 Gb assembly, cached); without this option the motif is detected from the ends of the largest scaffolds (the unit forming the most tandem arrays at both starts and ends; the run prints the evidence and records the motif in `run.txt`). The map's own telomere track is kept in the map and used only with `--telomere-from-map`, with no `--fasta`, or when no motif is found. `--telomere-5p/3p` take existing telo_scan bedgraphs |
 | `--add-tracks` | write a copy of each map with these tracks, the BUSCO duplicate pairs / missing genes, and the sex chromosome tracks (`sex_chromosome`: 2 hemizygous, 1 the rest of a sex-linked stretch; `par`: 2 PAR, 1 candidate), for viewing in PretextView (needs PretextGraph). The bedgraphs are in `OUT_DIR/tracks/` in any case |
 | `--sex-system SYSTEM` | the species' sex chromosome system, if known (`XY`, `ZW`, `X0`, `Z0`, `X1X2Y`, `XY1Y2`, `Z1Z2W`, `ZW1W2`): tags the sex chromosome copies `X`/`Y`, `Z`/`W`, `X1`/`X2` ... |
 | `--gfa GFA --yahs-agp AGP` (each once per haplotype) | hifiasm's contig graph (`*.hap1.p_ctg.gfa`; with or without sequence) and the YaHS AGP that built the scaffolds from those contigs (`H1=path`, or a name containing `hap1`). Where the graph links the two contig ends YaHS put next to each other, the join is right: the gap is never cut (row `graph_link`), and `asm` closes it, dropping the overlap the graph reports after checking it in the sequence. Where the only link out of the left contig and the only one into the right go to one small contig that is a scaffold of its own, that contig fills the gap (row `graph_bridge`); `asm` puts it there and closes both sides. `OUT_DIR/<name>.graph_edits.tsv` lists every change |

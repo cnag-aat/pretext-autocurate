@@ -101,6 +101,7 @@ def main():
             env = dict(os.environ, PYTHONPATH=os.path.join(R, "src"))
             r = subprocess.run(cmd, env=env, capture_output=True, text=True)
             took = round((time.time() - t) / 60, 1)
+            os.makedirs(a.out, exist_ok=True)       # a run that fails early creates nothing
             with open(os.path.join(a.out, f"{case['name']}.log"), "w") as f:
                 f.write(r.stdout + r.stderr)
             if r.returncode != 0:

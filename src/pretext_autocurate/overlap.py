@@ -399,3 +399,135 @@ def gap_overlaps(raw, fasta, minimap2=None, threads=4, window=1_000_000, min_cop
         return dict(scaffold=name, gap=(g0, g1), al=al, ok=ok, switch=sw)
     with ThreadPoolExecutor(max_workers=max(1, int(threads))) as ex:     # minimap2 runs outside the GIL
         return list(ex.map(one, gaps))
+
+
+@dataclass
+class CopyCall:
+    """What a candidate haplotig is, from its alignment to the partner region its Hi-C copy line
+    points at (`classify_candidates`)."""
+    piece: str
+    partner: str
+    kind: str                 # gap_fill | copy | none
+    strand: str               # '+' / '-': the piece's direction along the partner
+    aligned: float            # share of the piece in the chain of alignment blocks
+    divergence: float
+    gap: tuple = None         # gap_fill: the partner's gap (0-based [g0, g1))
+    left: tuple = None        # gap_fill: the piece's copy at its start ([a, b), piece bp)
+    right: tuple = None       # gap_fill: its copy at its end
+    fill: tuple = None        # gap_fill: the piece's own sequence that goes into the gap
+    # gap_fill: where each copy can switch to the flank without a gap, 0-based (piece base,
+    # identical flank base), in an identical stretch nearest the fill; None when there is none
+    left_switch: tuple = None
+    right_switch: tuple = None
+
+
+def _chain(blocks, strand, max_gap):
+    """Heaviest collinear chain of (q0, q1, t0, t1, len, de) in one strand, sorted by q."""
+    tt = (lambda b: (b[2], b[3])) if strand == "+" else (lambda b: (-b[3], -b[2]))
+    bl = sorted(blocks, key=lambda b: b[0])
+    if not bl:
+        return [], 0
+    best, prev = [b[4] for b in bl], [-1] * len(bl)
+    for j, bj in enumerate(bl):
+        tj0 = tt(bj)[0]
+        for i in range(j):
+            ti1 = tt(bl[i])[1]
+            dq, dt = bj[0] - bl[i][1], tj0 - ti1
+            if -5000 <= dq <= max_gap and -5000 <= dt <= max_gap and best[i] + bj[4] > best[j]:
+                best[j], prev[j] = best[i] + bj[4], i
+    j = int(np.argmax(best))
+    w, out = best[j], []
+    while j >= 0:
+        out.append(bl[j])
+        j = prev[j]
+    return out[::-1], w
+
+
+def classify_candidates(fasta, cands, minimap2=None, threads=4, flank=1_000_000, max_gap=2_000_000, min_copy=10_000):
+    """Each candidate (piece, partner, partner_bp 0-based) aligned against the partner around
+    partner_bp (the piece's length plus `flank` each way), minimap2 asm20, the heaviest collinear
+    chain in either strand. Returns {piece: CopyCall}:
+
+      gap_fill  the chain starts at one end of the piece and ends at the other, and jumps across
+                a gap of the partner between two blocks: the piece's ends are copies of the two
+                flanks (each >= min_copy, reaching the gap within max(20 kb, 10%) of it, <= 5%
+                divergence) and the stretch between them fills the gap (xgTylRafi scaffold_29: its
+                first 236 kb copy scaffold_1 just after the 18.23 Mb gap, its last 77 kb just
+                before it, both on the - strand, and 392 kb between them fill it);
+      copy      >= 70% of the piece in the chain at <= 5% divergence: a haplotypic copy;
+      none      otherwise (the copy line was something else, or the copy is too diverged).
+
+    The pieces are aligned `threads` at a time, one minimap2 thread each."""
+    import re
+    from concurrent.futures import ThreadPoolExecutor
+    from .graph import Faidx
+    from .homology import find_tool
+    mm = find_tool("minimap2", minimap2)
+    if mm is None:
+        return {}
+    fa = Faidx(fasta)
+    tol = lambda n: max(20_000, 0.1 * n)
+
+    def one(c):
+        piece, partner, pbp = c
+        L, Lp = fa.length(piece), fa.length(partner)
+        r0, r1 = max(0, pbp - L - flank), min(Lp, pbp + L + flank)
+        tseq = fa.fetch(partner, r0, r1)
+        with tempfile.TemporaryDirectory() as d:
+            q, t = os.path.join(d, "q.fa"), os.path.join(d, "t.fa")
+            with open(q, "w") as f:
+                f.write(f">q\n{fa.fetch(piece, 0, L)}\n")
+            with open(t, "w") as f:
+                f.write(f">t\n{tseq}\n")
+            r = subprocess.run([mm, "-x", "asm20", "-c", "--cs", "--secondary=no", "-t", "1", t, q], capture_output=True,
+                               text=True)
+        bl = {"+": [], "-": []}
+        for line in r.stdout.splitlines():
+            x = line.split("\t")
+            if len(x) < 12 or int(x[10]) < 5000:
+                continue
+            de = next((float(y[5:]) for y in x[12:] if y.startswith("de:f:")), float("nan"))
+            cs = next((y[5:] for y in x[12:] if y.startswith("cs:Z:")), "")
+            bl[x[4]].append((int(x[2]), int(x[3]), int(x[7]) + r0, int(x[8]) + r0, int(x[10]), de, cs))
+        (ch, w), strand = max(((_chain(bl[s], s, max_gap), s) for s in "+-"), key=lambda z: z[0][1])
+        if not ch:
+            return piece, CopyCall(piece, partner, "none", "", 0.0, float("nan"))
+        tot, cur = 0, None
+        for a, b in sorted((b[0], b[1]) for b in ch):
+            if cur is None or a > cur[1]:
+                tot += (cur[1] - cur[0]) if cur else 0
+                cur = [a, b]
+            else:
+                cur[1] = max(cur[1], b)
+        tot += cur[1] - cur[0]
+        div = sum(b[4] * b[5] for b in ch) / max(sum(b[4] for b in ch), 1)
+        call = CopyCall(piece, partner, "none", strand, tot / L, div)
+        gaps = [(r0 + m.start(), r0 + m.end()) for m in re.finditer("N{10,}", tseq)]
+        if div <= 0.05 and ch[0][0] <= tol(L) and L - ch[-1][1] <= tol(L):
+            for i in range(len(ch) - 1):
+                a, b = ch[i], ch[i + 1]
+                for g0, g1 in gaps:
+                    if strand == "+":           # a before the gap, b after it
+                        ok = a[3] <= g0 + 5000 and b[2] >= g1 - 5000 and g0 - a[3] <= tol(a[1]) and b[2] - g1 <= tol(L - b[0])
+                    else:                       # the piece runs backwards: a after the gap, b before it
+                        ok = a[2] >= g1 - 5000 and b[3] <= g0 + 5000 and a[2] - g1 <= tol(a[1]) and g0 - b[3] <= tol(L - b[0])
+                    if ok and a[1] >= min_copy and L - b[0] >= min_copy and b[0] >= a[1]:
+                        call.kind, call.gap = "gap_fill", (g0, g1)
+                        call.left, call.fill, call.right = (0, a[1]), (a[1], b[0]), (b[0], L)
+
+                        def switch(blocks, inner):
+                            """Identical run nearest the fill in these copy blocks: its middle base pair."""
+                            runs = [r_ for x in blocks for r_ in _match_runs(x[0], x[1], x[2], strand, x[6], 1000)]
+                            if not runs:
+                                return None
+                            mid = lambda r_: r_[0] + (r_[2] // 2 if strand == "+" else -(r_[2] // 2))
+                            qs, ts_, m = min(runs, key=lambda r_: abs(mid(r_) - inner))
+                            return (mid((qs, ts_, m)), ts_ + m // 2)
+                        call.left_switch = switch(ch[:i + 1], a[1])
+                        call.right_switch = switch(ch[i + 1:], b[0])
+                        return piece, call
+        if call.aligned >= 0.7 and div <= 0.05:
+            call.kind = "copy"
+        return piece, call
+    with ThreadPoolExecutor(max_workers=max(1, int(threads))) as ex:
+        return dict(ex.map(one, cands))

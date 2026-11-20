@@ -103,17 +103,35 @@ def _new_haplotig(files, parts, out_dir):
     return name
 
 
+def _delta(old, new):
+    """Bases a row gained and lost when its range went from `old` to `new` (AgpRows of one
+    component): ([(lo, hi)] gained, [(lo, hi)] lost), 1-based inclusive."""
+    gain, loss = [], []
+    if new.beg < old.beg:
+        gain.append((new.beg, old.beg - 1))
+    if new.beg > old.beg:
+        loss.append((old.beg, new.beg - 1))
+    if new.end > old.end:
+        gain.append((old.end + 1, new.end))
+    if new.end < old.end:
+        loss.append((new.end + 1, old.end))
+    return gain, loss
+
+
 def apply_switches(out_dir, fa_in, rows, report_rows, tol_bp=2_000_000):
     """Gapless joins in pretext-to-asm's output (every NAME*.agp with its FASTA in `out_dir`).
 
-    For a switch row: an object with `scaffold`'s line and `partner`'s line on either side of
-    one gap, `scaffold` facing the gap with its end (within `tol_bp` of px_bp) and `partner`
-    with its cut. `scaffold` is trimmed to `bp`, `partner` starts after `partner_bp` (it gains
-    the part of its copy beyond the switch), and the gap goes. Then the object holding the cut
-    copy of `partner` (one line, the Haplotig) ends at partner_bp and is followed by the rest of
-    `scaffold` past bp, so no sequence is lost: the haplotig carries the other copy of each side.
-    `fa_in` is the input assembly (graph.Faidx). Appends to `report_rows`; returns the number
-    of joins made."""
+    For a switch row: an object with a line of `scaffold` and a line of `partner` on either side
+    of one gap, `scaffold`'s facing the gap at px_bp (the nearest such line, within `tol_bp`).
+    That line now ends at `bp`, `partner`'s starts one base past `partner_bp` (its base identical
+    to bp's), and the gap goes. Each line may gain bases (they were in a haplotig, cut off as a
+    copy) or lose them; nothing is lost: bases a line gains leave the one-line haplotig object
+    that held them, and bases a line loses go to the haplotig (that same object, else a new one),
+    so the haplotig holds the other path through the bubble. The cases: two scaffold ends that
+    overlap (one line gains, the other loses), a gap with a copy on both sides (both lose), a
+    piece filling a gap (one junction loses on both sides; at the other the piece may gain back
+    part of a copy cut off it). `fa_in` is the input assembly (graph.Faidx). Appends to
+    `report_rows`; returns the number of joins made."""
     files = []
     for f in sorted(os.listdir(out_dir)):
         if not f.endswith(".agp") or ".pretext." in f:
@@ -126,82 +144,80 @@ def apply_switches(out_dir, fa_in, rows, report_rows, tol_bp=2_000_000):
     made = []
     for sw in (r for r in rows if r["kind"] == "switch"):
         K, T = sw["scaffold"], sw["partner"]
-        Lk = fa_in.length(K)
-        k_tail = sw["px_bp"] >= Lk // 2            # the kept end: its tail (or its head)
-        gap_mode = K == T                           # a gap inside one scaffold: px_bp is its left side
-        done = None
+        best = None                                  # (distance, file, object, index, k on the left)
         for fi in files:
             for obj, rs in fi[3].items():
                 for i in range(1, len(rs) - 1):
                     r1, g, r2 = rs[i - 1], rs[i], rs[i + 1]
                     if r1.kind != "W" or g.kind == "W" or r2.kind != "W" or {r1.name, r2.name} != {K, T}:
                         continue
-                    if gap_mode:                    # the kept row ends exactly at the gap
-                        if _facing(r1, True) == sw["px_bp"]:
-                            kr, kright, tr, tright = r1, True, r2, False
-                        elif _facing(r2, False) == sw["px_bp"]:
-                            kr, kright, tr, tright = r2, False, r1, True
-                        else:
+                    for k_left in (True, False):
+                        kr = r1 if k_left else r2
+                        if kr.name != K:
                             continue
-                    else:
-                        kr, kright = (r1, True) if r1.name == K else (r2, False)
-                        tr, tright = (r2, False) if r1.name == K else (r1, True)
-                    kf = _facing(kr, kright)
-                    if not gap_mode and abs(kf - (Lk if k_tail else 1)) > tol_bp:
-                        continue
-                    # the kept row ends at the switch; the partner row starts one base past its
-                    # match, going away from the gap (rightwards in the object, or leftwards)
-                    away = 1 if (tr.orient == "+") != tright else -1
-                    t_in = sw["partner_bp"] + away
-                    kr2, tr2 = _set_facing(kr, kright, sw["bp"]), _set_facing(tr, tright, t_in)
-                    if kr2.beg > kr2.end or tr2.beg > tr2.end:
-                        continue
-                    old_t = _facing(tr, tright)
-                    rs[i - 1:i + 2] = [kr2, tr2] if r1.name == K else [tr2, kr2]
-                    fi[4][obj] = rs
-                    done = (obj, kf, old_t, t_in)
-                    break
-                if done:
-                    break
-            if done:
-                break
-        if not done:
+                        d = abs(_facing(kr, k_left) - sw["px_bp"])
+                        if d <= tol_bp and (best is None or d < best[0]):
+                            best = (d, fi, obj, i, k_left)
+        if best is None:
             report_rows.append(dict(file="", object="", left=K, right=T, graph_overlap="", overlap="",
                                     action="switch_skipped: the two pieces are not across one gap in the output"))
             continue
-        obj, kf, old_t, t_in = done
+        _, fi, obj, i, k_left = best
+        rs = fi[3][obj]
+        r1, r2 = rs[i - 1], rs[i + 1]
+        kr, tr, kright, tright = (r1, r2, True, False) if k_left else (r2, r1, False, True)
+        # the kept line ends at the switch; the partner's starts one base past its match, going
+        # away from the gap (rightwards in the object, or leftwards)
+        away = 1 if (tr.orient == "+") != tright else -1
+        t_in = sw["partner_bp"] + away
+        kr2, tr2 = _set_facing(kr, kright, sw["bp"]), _set_facing(tr, tright, t_in)
+        if kr2.beg > kr2.end or tr2.beg > tr2.end:
+            report_rows.append(dict(file="", object=obj, left=K, right=T, graph_overlap="", overlap="",
+                                    action="switch_skipped: the switch lies outside the lines it joins"))
+            continue
+        rs[i - 1:i + 2] = [kr2, tr2] if k_left else [tr2, kr2]
+        fi[4][obj] = rs
         made.append(sw)
-        # the haplotig: the cut copy of T, now ending at the switch, then K past the switch
-        tail = None
-        if gap_mode:
-            # a new haplotig: T from the gap to its switch base, then K past its switch base up to
-            # the gap (the other path through the bubble)
-            tpart = AgpRow("", "W", T, min(old_t, sw["partner_bp"]), max(old_t, sw["partner_bp"]),
-                           "+" if sw["partner_bp"] >= old_t else "-", ())
-            kpart = AgpRow("", "W", K, sw["bp"] + 1, kf, "+", ()) if kf > sw["bp"] else \
-                AgpRow("", "W", K, kf, sw["bp"] - 1, "-", ())
-            tail = _new_haplotig(files, [tpart, kpart], out_dir)
-        for fi in files if not gap_mode else []:
-            for hobj, rs in fi[3].items():
-                if len(rs) == 1 and rs[0].kind == "W" and rs[0].name == T and \
-                        (rs[0].beg <= sw["partner_bp"] <= rs[0].end or abs(rs[0].end - old_t) <= 1 or abs(rs[0].beg - old_t) <= 1):
-                    r = rs[0]
-                    t_head = r.beg == 1                      # the copy is T's start
-                    r = r._replace(beg=1, end=sw["partner_bp"], orient="+") if t_head else \
-                        r._replace(beg=sw["partner_bp"], end=fa_in.length(T), orient="-")
-                    kpart = AgpRow(hobj, "W", K, sw["bp"] + 1, Lk, "+", ()) if k_tail else \
-                        AgpRow(hobj, "W", K, 1, sw["bp"] - 1, "-", ())
-                    fi[3][hobj] = [r, kpart] if kpart.beg <= kpart.end else [r]
-                    fi[4][hobj] = fi[3][hobj]
-                    tail = hobj
-                    break
-            if tail:
-                break
+        gained, lost = [], []
+        for old, new in ((tr, tr2), (kr, kr2)):      # the partner's first: the bubble's other path
+            g_, l_ = _delta(old, new)
+            gained += [(old.name, a, b) for a, b in g_]
+            lost += [(old.name, a, b) for a, b in l_]
+        # a line that gained bases took them from the one-line haplotig that held them
+        hobj = None
+        for name, a, b in gained:
+            for fj in files:
+                for o, hrs in fj[3].items():
+                    if o == obj or len(hrs) != 1 or hrs[0].kind != "W" or hrs[0].name != name:
+                        continue
+                    h = hrs[0]
+                    if not (h.beg <= a and b <= h.end):
+                        continue
+                    if a == h.beg:
+                        h = h._replace(beg=b + 1)
+                    elif b == h.end:
+                        h = h._replace(end=a - 1)
+                    else:
+                        continue                     # the gained stretch is not at either end
+                    fj[3][o] = [h] if h.beg <= h.end else []
+                    fj[4][o] = fj[3][o]
+                    hobj = (fj, o)
+        parts = [AgpRow("", "W", n, a, b, "+", ()) for n, a, b in lost if a <= b]
+        if hobj is not None:
+            fj, o = hobj
+            fj[3][o] = fj[3][o] + [p._replace(obj=o) for p in parts]
+            fj[4][o] = fj[3][o]
+            tail = o
+        elif parts:
+            tail = _new_haplotig(files, parts, out_dir)
+        else:
+            tail = None
+        moved_bp = sum(b - a + 1 for _, a, b in lost)
         report_rows.append(dict(file="", object=obj, left=f"{K}:{sw['bp']}", right=f"{T}:{t_in}", graph_overlap="",
-                                overlap=f"{abs(kf - sw['bp'])}+{abs(old_t - t_in)}",
-                                action="switch: gap removed, joined where the two copies are identical; " +
-                                       (f"haplotig {tail} holds the other copy of each side" if tail else
-                                        f"no haplotig object found for the copy of {T}: {abs(kf - sw['bp']):,} bp of {K} left out")))
+                                overlap=f"{moved_bp}",
+                                action="switch: gap removed, joined where the two copies are identical" +
+                                       (f"; haplotig {tail} holds the other path ({moved_bp:,} bp moved there)"
+                                        if tail else "")))
     for path, fa, head, objs, changed in files:
         if changed:
             rebuild(path, fa, fa_in, head, objs, changed)
