@@ -6,10 +6,14 @@ opens, reviews and finishes, together with a table explaining every decision and
 list of the things that need a curator's eye. It does not replace the curator: marginal
 calls are flagged, never hidden.
 
-**Version 1.2.** Developed and tested on three genomes: a gastropod (single haplotype),
-the boreal owl *Aegolius funereus* (two haplotypes, MQ0 + MQ10) and the pseudoscorpion
-*Troglobisium racovitzai* (two haplotypes, heavily rearranged, MQ0 only). Thresholds are
-relative to each map's own signal. Always review the output before accepting it.
+**Version 1.3.** Developed and tested on four genomes: a gastropod (single haplotype), an
+insect primary assembly, the boreal owl *Aegolius funereus* (two haplotypes, MQ0 + MQ10)
+and the pseudoscorpion *Troglobisium racovitzai* (two haplotypes, heavily rearranged, MQ0
+only). Thresholds are relative to each map's own signal. Always review the output before
+accepting it.
+
+**Testing it on your genomes?** See [docs/TESTING.md](docs/TESTING.md): how to run it, compare
+it with your own curation, and send feedback (GitHub issue template "Tester feedback").
 
 ## Install
 

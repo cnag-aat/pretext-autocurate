@@ -1,0 +1,79 @@
+name: Tester feedback
+description: How pretext-autocurate did on one of your genomes (see docs/TESTING.md)
+title: "[tester] <ToLID or genome>: "
+labels: ["tester-feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per genome, please. **Do not attach unpublished assemblies, maps or savestates
+        here** (this page is public): describe the case and share files with the CNAG team privately.
+  - type: input
+    id: genome
+    attributes:
+      label: Genome
+      description: ToLID or name, and taxon
+      placeholder: "e.g. xxGenSpec1, a gastropod"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Assembly
+      options:
+        - Two haplotypes in one map (H1_ / H2_)
+        - Single haplotype / primary assembly
+        - Other (say below)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and levels
+      description: "`pretext-autocurate --version`, and the level(s) you reviewed"
+      placeholder: "1.3.0, levels 0.5 and 1"
+    validations:
+      required: true
+  - type: textarea
+    id: run
+    attributes:
+      label: How it was run
+      description: The command line (or autocurate.run.txt), map size (Gb, pixels), inputs given (FASTA, high-MQ map, GFAs, YaHS AGPs), wall time and peak memory
+      render: text
+  - type: dropdown
+    id: reference
+    attributes:
+      label: Your curation of the same map
+      options:
+        - I curated it from scratch and can share the savestate privately
+        - I corrected the tool's output and can share the savestate privately
+        - I curated it but cannot share the savestate
+        - No curation of this map
+    validations:
+      required: true
+  - type: textarea
+    id: wrong
+    attributes:
+      label: Edits you would not accept
+      description: One per line - scaffold, position (Mb), what the tool did, what is right and why (what the map shows). Screenshots welcome.
+      placeholder: "scaffold_12 at 34.5 Mb: cut, but contact across is normal; the gap is a repeat"
+  - type: textarea
+    id: right
+    attributes:
+      label: What it got right that you would have done by hand
+      description: And roughly how much time it saved or cost you overall
+  - type: textarea
+    id: review
+    attributes:
+      label: The review list
+      description: Was autocurate.review.tsv useful? Too long, missing things, items you ignored?
+  - type: textarea
+    id: errors
+    attributes:
+      label: Errors or crashes
+      description: The full message and the command
+      render: text
+  - type: textarea
+    id: other
+    attributes:
+      label: Anything else
