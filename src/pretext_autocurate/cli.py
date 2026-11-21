@@ -108,6 +108,7 @@ def cmd_haplotigs(a):
 # Decisions a curator should look at in allhaps mode, in review order (dict order is the sort
 # key), with why each is listed: everything else was applied with clear evidence.
 REVIEW_ALLHAPS = {"rephase": "a copy of a same-haplotype scaffold, moved to the other haplotype (all-vs-all PAF)",
+                  "displaced": "stretch cut out: its Hi-C line points elsewhere in its haplotype; check where it went",
                   "overlap": "a scaffold end copied another in the same haplotype: cut off as a FalseDuplicate (re-phase "
                              "it if the other haplotype lacks it)",
                   "flag_overlap": "two scaffold ends look like copies of each other: not cut",

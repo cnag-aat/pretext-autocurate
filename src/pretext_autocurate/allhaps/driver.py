@@ -94,11 +94,19 @@ def _setup(run_):
         cuts += more
         graph_rows += seq_rows
         run_.seq_overlaps, run_.exact_breaks = applied, exact
+    # cuts inside a contig placed to the base by the alignment (sites._contig_misjoins)
+    run_.exact_breaks += [x["exact"] for x in sites if x["action"] == "cut" and x.get("exact")]
     # inversions inside a scaffold: turned in place in the layout (inversions.py)
     run_.inv_flips = []
     if do_cuts:
         run_.inv_flips, inv_rows = inversions.find(raw, [q for q, _, _ in cuts], blocks, th)
         graph_rows += inv_rows
+    # displaced stretches (linescan.py), within each haplotype: cut out at both ends; pairing
+    # and placement (alignment to the homolog, Hi-C) then put the piece where it belongs
+    if do_cuts:
+        more, rows = _displaced_cuts(raw, hap_regex, th, [q for q, _, _ in cuts])
+        cuts += more
+        graph_rows += rows
     flips = [x["tip"] for x in sites if x["action"] == "invert_tip"]
     pt = SegmentedMap(raw, [q for q, _, _ in cuts])          # from here on, units are cut pieces
     pairs, info = pair_homologs(pt, hap_regex, blocks=blocks, margin=margin)
@@ -107,6 +115,35 @@ def _setup(run_):
     run_.cuts, run_.flips, run_.graph_rows, run_.info, run_.pairs = cuts, flips, graph_rows, info, pairs
     run_.pt, run_.sites, run_.sx = pt, sites, sx
     run_.cut_out = sorted(q for d in dups if d["cut"] for q in d["cut"])       # gaps a copy was cut out at
+
+
+def _displaced_cuts(raw, hap_regex, th, cut_px):
+    """Cuts at both ends of each displaced stretch (linescan.scan with the rows looking only
+    within their own haplotype: every stretch has a line to its homolog), and a 'displaced' row
+    each. Returns ([(after_px, scaffold, reason)], rows)."""
+    from .. import linescan
+    hap = [m.group(1) if (m := re.match(hap_regex, n)) else "" for n in raw.names]
+    ids = {h: i for i, h in enumerate(sorted(set(hap)))}
+    groups = [ids[h] for h in hap]
+    lp = linescan.Params(line_min=th.move_line, move_ratio=th.move_ratio, spec=th.move_spec)
+    sg = _signal(raw)
+    found = linescan.scan(raw, sg, lp, peaks=linescan.cached_peaks(raw, lp, groups), junctions=cut_px, groups=groups)
+    bpp, have, out, rows = raw.bp_per_pix, set(cut_px), [], []
+    for d in found:
+        s = raw.names[d.s]
+        a_bp, b_bp = raw.rel_coord[d.a] * bpp, (raw.rel_coord[d.b] + 1) * bpp
+        ts = int(raw.orig_scaffold[d.t])
+        why = (f"{a_bp / 1e6:.2f}-{b_bp / 1e6:.2f} Mb has contact {d.left:.2f} / {d.right:.2f} with its own sides (of "
+               f"adjacent sequence) and a line to {raw.names[ts]} at {(raw.rel_coord[d.t] + 1) * bpp / 1e6:.2f} Mb "
+               f"({d.line:.2f}; next best place {d.extra['row_out'] / max(d.extra['row_in'], 1e-9) * d.line:.2f})")
+        for q in (d.a - 1, d.b):
+            if not any(abs(q - x) <= 2 for x in have):
+                out.append((q, d.s, "end of a displaced stretch: " + why))
+                have.add(q)
+        rows.append(dict(action="displaced", scaffold=s, length_mb=round((d.b - d.a + 1) * bpp / 1e6, 2),
+                         partner=raw.names[ts], strand=d.strand, tag="", score=round(d.line, 2),
+                         next_best=round(d.home, 2), evidence=why + "; cut out at both ends, placed with the other pieces"))
+    return out, rows
 
 
 def _small(run_):

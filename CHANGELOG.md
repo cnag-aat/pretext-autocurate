@@ -1,6 +1,58 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (2026-11-21)
+
+Sequence-placed edits, displaced stretches, and an experimental adjacency solver.
+
+Single haplotype
+- Displaced stretches (`linescan.py`): a stretch with almost no contact with its own sides and
+  a specific line off the diagonal to one place elsewhere is cut out and moved there (`move`
+  rows). One pass over the map finds them anywhere (about 100 s on a 65,536 px map, once per
+  sweep). With `--fasta` the stretch is aligned to its place: the strand, and a copy at one end
+  (it goes right next to that copy; the copy is cut off as a Haplotig and joined without a
+  gap). xgTylRafi: exactly the four stretches the curator moved, place and strand right;
+  junctions 31/35 / 47/68 -> 34/37 / 49/68, breaks 95% / 53% -> 93% / 57%.
+- Inversions from the bow-tie (`inversion.py`), cut at both ends and rejoined reversed when
+  clear, proposed otherwise; half bow-ties at scaffold ends applied at level 1 only.
+- Contig-end overlaps (`overlap.py`): one scaffold's end is the other haplotype of another's,
+  confirmed and placed to the base by the sequence; the copy is cut off as a Haplotig and the
+  other end joined to the cut. Gaps with a copy on both sides are closed by `asm`.
+- Candidate haplotigs are always aligned to where their copy line points: a confirmed copy,
+  nothing, or a gap fill (its ends copy the two sides of a gap; it goes into the gap, its
+  copies cut off as Haplotigs, both junctions gapless).
+
+Two haplotypes
+- Inversions turned in place when the homolog agrees; overlaps within a haplotype cut off as
+  FalseDuplicate (review row); gaps with a copy on both sides closed (`allhaps/seqfix.py`).
+- A cut between two chromosomes made at a gap moves into the contig when the homolog changes
+  there, and the stretch between is turned onto the far side (qqTroRaco H2_scaffold_1).
+  Alignment breaks read across short islands aligning elsewhere, and a break's site is any gap
+  between its two alignments (qqTroRaco H2_scaffold_43 at level 0.5). qqTroRaco level 0.5:
+  breaks 86% / 66% -> 88% / 76%.
+- Shrapnel specific to one pair is an Unloc of that pair; small pairs whose copies belong to
+  a larger pair dissolve into it; the second copy's direction from the arranged chains'
+  alignment; pieces against the chain's Hi-C direction turned in place; sex chromosomes laid
+  out PAR first.
+- Displaced stretches are scanned within each haplotype and cut out (`displaced` review rows).
+- `--paf` may be an all-vs-all PAF: re-phasing of same-haplotype copies (`rephase`), no joins
+  between same-haplotype copies, self alignments as a repeat signal.
+- Non-target sequence: `--contaminants` and `--tiara` (Tiara calls need other evidence);
+  organelles written apart after pretext-to-asm.
+
+Both
+- Breakpoints placed to the base (`OUT.breaks.tsv`, `asm --breaks`): cuts moved from the
+  pixel to the base before pretext-to-asm; gapless joins where two copies are identical, the
+  other path through each bubble kept as a haplotig (`OUT.exact_edits.tsv` lists them).
+- telo_scan.py decides telomeres by default with `--fasta`, the motif detected from the
+  scaffold ends when not given (`--telomere-from-map` for the map's track).
+- Track names GAPs / ONTcov / TELOMERES (older maps) are read as gap / coverage / telomere.
+- Experimental adjacency solver (`run --engine adjacency`, both modes) next to the rules pass,
+  for comparison; the rules pass stays the default (it finds much more).
+- `tools/mark_disagreements.py` writes short map names for PretextView's file picker;
+  `tools/align_chunked.py` for large all-vs-all alignments; `tools/score_all.py` against
+  curated savestates.
+
+Earlier in this release (between 1.2.0 and the items above):
 
 - Alignment blocks are shared out over the cut pieces they cover (`common.split_block`)
   instead of being credited to the pieces at their midpoints: one 56 Mb Troglobisium block

@@ -96,10 +96,14 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
                            f"10 px, {cdt.far:.2f} at 10-40 px) with normal contact on each side")
     # gaps where the alignment to the other haplotype breaks: candidates even with normal contact
     if blocks is not None and use_breaks:
-        for bq, kind, lt, rt in alignment_breaks(pt, blocks):
-            # only breaks at a gap (within 2 px) are sites: inside a contig a break usually marks
-            # where the other haplotype is in several scaffolds (contigs over scaffold joins)
-            near_gaps = [x for x in range(max(0, bq - 2), min(pt.npix, bq + 3)) if gap[x] > 0]
+        for bq, kind, lt, rt, A, B in alignment_breaks(pt, blocks, detail=True):
+            # only breaks at a gap are sites: inside a contig a break usually marks where the other
+            # haplotype is in several scaffolds (contigs over scaffold joins). The gap may be
+            # anywhere between the two alignments, or within 2 px of either
+            s0 = int(pt.scaffold_start[pt.orig_scaffold[bq]])
+            lo, hi_ = min(bq, s0 + int(A[1] / pt.bp_per_pix)) - 2, max(bq, s0 + int(B[0] / pt.bp_per_pix)) + 2
+            near_gaps = [x for x in range(max(0, lo), min(pt.npix, hi_ + 1)) if gap[x] > 0
+                         and pt.orig_scaffold[x] == pt.orig_scaffold[bq]]
             if not near_gaps:
                 continue
             q = min(near_gaps, key=lambda x: abs(x - bq))
@@ -291,13 +295,85 @@ def telomere_sites(pt, pairs, hi=None, hap_regex=r"^(H\d+)_", blocks=None, conta
         if by_q[q]["action"] == "cut" and by_q[c]["action"] != "cut":
             by_q[c]["action"] = "cut"
             by_q[c]["reason"] += f"; cut because the homologous site in {pt.names[by_q[q]['s']]} is a misjoin"
+    if blocks is not None and use_breaks:
+        out += _contig_misjoins(pt, blocks, out, gap)
+        out = [x for x in out if "moved_to" not in x]
     for q, (s, why) in sharp.items():
         out.append(dict(q=q, s=s, action="cut", reason=why, tip=(q, q)))
     out.sort(key=lambda x: x["q"])
     return out
 
 
-def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repeat_max=0.8):
+def _contig_misjoins(pt, blocks, out, gap, max_bp=1500000, abut_bp=1000000):
+    """A cut between two chromosomes made at a gap, when the homolog changes a little way off
+    it, inside a contig: the contig itself joins the two chromosomes, and the stretch between
+    that point and the gap belongs with the far side (qqTroRaco H2_scaffold_1: the last 436 kb
+    of contig h2tg000110l aligns to the end of H1_scaffold_30, the homolog across the gap;
+    curator, 2026-11-20). The cut moves into the contig (placed to the base from the two
+    alignments: `exact`) and the gap becomes a site between that stretch and the far side:
+    invert_tip when the stretch aligns to the far side's homolog the other way round and,
+    turned, continues it there; otherwise keep. Edits `out` in place; returns the new sites.
+
+    `max_bp`: how far from the gap the change of homolog may be; `abut_bp`: how close on the
+    homolog the turned stretch must come to the far side's end."""
+    bpp, new = pt.bp_per_pix, []
+    brk = [b for b in alignment_breaks(pt, blocks, detail=True) if b[1] == "the two sides align to different scaffolds"]
+    for x in out:
+        if x["action"] != "cut" or "different homologs" not in x["reason"]:
+            continue
+        q, s = x["q"], x["s"]
+        a, name = int(pt.scaffold_start[s]), pt.names[s]
+        gbp = (q - a + 1) * bpp                                  # the gap, in bp along the scaffold
+        for bq, _, lt, rt, A, B in brk:
+            if int(pt.orig_scaffold[bq]) != s or abs(bq - q) <= 2 or abs(bq - q) * bpp > max_bp:
+                continue
+            if (gap[max(a, bq - 2):bq + 3] > 0).any():
+                continue                                         # at a gap: a site of its own
+            left = bq < q                                        # the stretch lies left of the gap
+            near = B if left else A                              # its alignment
+            # the far side: the first long alignment past the gap
+            far = [(bk.qs, bk.qe, bk.t, bk.ts, bk.te, bk.same_strand) if bk.q == name else
+                   (bk.ts, bk.te, bk.q, bk.qs, bk.qe, bk.same_strand)
+                   for bk in blocks if bk.mapq >= 30 and bk.qe - bk.qs >= 100000 and name in (bk.q, bk.t)]
+            far = [f for f in far if (f[0] >= gbp - 2 * bpp if left else f[1] <= gbp + 2 * bpp)]
+            if not far:
+                continue
+            f = min(far, key=lambda f: f[0]) if left else max(far, key=lambda f: f[1])
+            if f[2] != near[2]:
+                continue                                         # the stretch is not of the far side's homolog
+            # homolog positions: the far side's end at the gap; the stretch's end at the gap (as
+            # assembled) and its end away from it (what meets the far side when it is turned)
+            f_end = (f[3] if f[5] else f[4]) if left else (f[4] if f[5] else f[3])
+            at_gap = (near[4] if near[5] else near[3]) if left else (near[3] if near[5] else near[4])
+            away = (near[3] if near[5] else near[4]) if left else (near[4] if near[5] else near[3])
+            cut_bp = int(round((A[1] + B[0]) / 2))
+            tip = (bq + 1, q) if left else (q + 1, bq)
+            kb = (tip[1] - tip[0] + 1) * bpp / 1e3
+            why_cut = x["reason"].split("; ")[-1]
+            x["moved_to"] = bq                                  # replaced by the two sites below
+            if near[5] != f[5] and abs(away - f_end) <= abut_bp and abs(away - f_end) < abs(at_gap - f_end):
+                act = "invert_tip"
+                tail = (f"the stretch aligns to {f[2]} the other way round from the far side and, turned, continues it "
+                        f"({abs(away - f_end) / 1e3:.0f} kb apart on {f[2]}): inverted")
+            else:
+                act = "keep"
+                tail = "the stretch continues the far side as assembled: left as it is"
+            new.append(dict(q=q, s=s, action=act, tip=tip,
+                            reason=f"gap between the far side and the {kb:.0f} kb cut off it by the contig misjoin at "
+                                   f"{cut_bp / 1e6:.2f} Mb; {tail}"))
+            new.append(dict(q=bq, s=s, action="cut", tip=(bq, bq), exact=dict(
+                kind="cut", scaffold=name, px_bp=int((pt.rel_coord[bq] + 1) * bpp), bp=cut_bp, partner="", partner_bp=0,
+                method="alignment", evidence=f"the alignment to the other haplotype changes chromosome here ({lt} | {rt})"),
+                reason=(f"no gap here: the alignment to the other haplotype changes chromosome inside a contig ({lt} | {rt}), "
+                        f"{abs(gbp - cut_bp) / 1e3:.0f} kb from the gap at {gbp / 1e6:.2f} Mb where the two sides were "
+                        f"first cut ({why_cut}); the {kb:.0f} kb between belong with the far side: the contig joins the "
+                        "two chromosomes, cut here")))
+            break
+    return new
+
+
+def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repeat_max=0.8, detail=False,
+                     island_bp=500000):
     """Places where the alignment to the other haplotype stops being colinear: between two
     consecutive long alignments of a scaffold the other side changes scaffold, strand, or
     jumps. Returns [(pixel, kind, text for the left side, text for the right side)].
@@ -309,7 +385,10 @@ def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repe
     Only alignments of mapq >= 30 and `min_len` bp count; scaffolds under `min_px` pixels are
     skipped; `end_bp`: how near its scaffold end an alignment must stop for a change of
     scaffold to be read as the other haplotype simply continuing in the next scaffold;
-    `repeat_max`: breaks where the repeat track is at least this share are ignored."""
+    `repeat_max`: breaks where the repeat track is at least this share are ignored;
+    `island_bp`: the longest alignment to another scaffold read across (see below). With
+    `detail`, each break also carries the two alignments, (start, end, other scaffold, its
+    start, its end, same strand), positions in bp along this scaffold."""
     bpp = raw.bp_per_pix
     ix = {n: i for i, n in enumerate(raw.names)}
     by = {}
@@ -329,6 +408,12 @@ def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repe
         for x in sorted(L):
             if not chain or x[1] > chain[-1][1]:            # skip alignments contained in the previous one
                 chain.append(x)
+        # a short island aligning elsewhere between two alignments to one scaffold is a repeat
+        # or an insertion, not where the colinearity changes: the break is read across it
+        # (qqTroRaco H2_scaffold_43: 190 kb of H1_scaffold_57 at the gap between two stretches
+        # of H1_scaffold_28)
+        chain = [x for k, x in enumerate(chain) if not (
+            0 < k < len(chain) - 1 and x[1] - x[0] < island_bp and chain[k - 1][2] == chain[k + 1][2] != x[2])]
         for A, B in zip(chain, chain[1:]):
             if A[2] != B[2]:
                 # If each side's alignment runs to the end of its scaffold, the other haplotype is
@@ -352,5 +437,5 @@ def alignment_breaks(raw, blocks, min_len=100000, min_px=30, end_bp=300000, repe
             q = int(raw.scaffold_start[i] + min((A[1] + B[0]) / 2 / bpp, raw.scaffold_npix[i] - 1))
             if rep is not None and float(rep[max(0, q - 2):q + 3].mean()) >= repeat_max:
                 continue                                    # inside a repeat: alignments end there anyway
-            out.append((q, kind, txt(A), txt(B)))
+            out.append((q, kind, txt(A), txt(B), A, B) if detail else (q, kind, txt(A), txt(B)))
     return out

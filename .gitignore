@@ -5,6 +5,7 @@ out/
 out_*/
 score_out/
 score_*/
+score_*.log
 golden_out/
 work/
 __pycache__/

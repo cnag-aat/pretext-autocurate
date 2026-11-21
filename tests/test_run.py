@@ -38,7 +38,7 @@ class TestRun(unittest.TestCase):
         self.assertTrue(all(i < n for i, _ in self.st.scaffs + self.st.meta_flags))
         # new contigs come only from applied cuts and from insertions splitting their target
         cuts = sum(d.action == "cut" for d in self.dec)
-        ins = sum(d.action == "insert" for d in self.dec)
+        ins = sum(d.action in ("insert", "move") for d in self.dec)     # a move goes in like an insertion
         joins = sum(d.action == "join" for d in self.dec)
         base = int((self.pt.scaffold_npix > 0).sum()) + cuts
         # a join of two pieces that were cut apart and put back in the same order merges them again
@@ -154,15 +154,15 @@ class TestRun(unittest.TestCase):
         self.assertTrue(a < b < c and c - a < 60)
 
     def test_only_clear_insertions_by_default(self):
-        ins = [d for d in self.dec if d.action == "insert"]
-        self.assertTrue(6 <= len(ins) <= 10)
+        ins = [d for d in self.dec if d.action in ("insert", "move")]   # displaced stretches move (linescan)
+        self.assertTrue(6 <= len(ins) <= 14)
         got = {(d.scaffold, d.target, d.strand) for d in ins}
         # insertions the curator also made (reviewed savestate), all at reduced-contact gaps
         for want in (("scaffold_5", "scaffold_16", "+"), ("scaffold_2", "scaffold_5", "+"),
                      ("scaffold_6", "scaffold_2", "+"), ("scaffold_21", "scaffold_10", "-"),
                      ("scaffold_6", "scaffold_6", "+")):
             self.assertIn(want, got)
-        self.assertTrue(all(d.length_px >= 15 and d.strand in "+-" for d in ins))
+        self.assertTrue(all((d.length_px >= 15 or d.action == "move") and d.strand in "+-" for d in ins))
         # the 2 Mb piece of scaffold_3 goes into scaffold_1 near 166.66 Mb, reversed, as curated
         d = [x for x in ins if x.scaffold == "scaffold_3" and x.target == "scaffold_1"]
         self.assertEqual(len(d), 1)

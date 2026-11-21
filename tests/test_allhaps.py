@@ -297,6 +297,34 @@ class TestAllhapsPseudoscorpion(unittest.TestCase):
         px = lambda r: int(self.pt.scaffold_start[ix[r["scaffold"]]] + round(r["length_mb"] * 1e6 / self.pt.bp_per_pix))
         return [(r["action"], px(r)) for r in rows if r["action"] in ("cut", "keep", "invert_tip")]
 
+    def test_contig_misjoin_and_island(self):
+        """Break sites from the alignment (curator, 2026-11-20). H2_scaffold_1: the homolog changes
+        from H1_scaffold_7 to H1_scaffold_30 inside a contig at 50.45 Mb, 0.4 Mb before the gap at
+        50.88 Mb: the cut goes into the contig (placed to the base) and the stretch between is
+        turned onto H1_scaffold_30's side. H2_scaffold_43: a 190 kb island aligning to
+        H1_scaffold_57 at the gap at 5.18 Mb does not hide the break between two stretches of
+        H1_scaffold_28 there."""
+        paf = os.path.join(ROOT, "seed", "fixtures", "qqTroRaco.H2_vs_H1.asm5.paf")
+        if not os.path.exists(paf):
+            self.skipTest("no PAF")
+        from pretext_autocurate.allhaps import telomere_sites, alignment_breaks
+        from pretext_autocurate.allhaps.pairing import pair_homologs
+        from pretext_autocurate.homology import read_paf
+        pt, blocks = self.pt, read_paf(paf, min_mapq=0)
+        ix = {n: i for i, n in enumerate(pt.names)}
+        mb = lambda x: (x["q"] - pt.scaffold_start[x["s"]] + 1) * pt.bp_per_pix / 1e6
+        brk = [b for b in alignment_breaks(pt, blocks) if pt.orig_scaffold[b[0]] == ix["H2_scaffold_43"]]
+        self.assertEqual([b[1] for b in brk], ["the two sides align to distant places"])
+        pairs, _ = pair_homologs(pt, r"^(H\d+)_", blocks=blocks)
+        sites = telomere_sites(pt, pairs, None, r"^(H\d+)_", blocks)
+        h1 = [x for x in sites if x["s"] == ix["H2_scaffold_1"] and mb(x) > 50]
+        cut = [x for x in h1 if x["action"] == "cut"]
+        self.assertEqual(len(cut), 1)
+        self.assertAlmostEqual(mb(cut[0]), 50.45, delta=0.1)
+        self.assertEqual(cut[0]["exact"]["bp"], 50446198)
+        self.assertEqual([x["action"] for x in h1 if x["action"] != "cut"], ["invert_tip"])
+        self.assertTrue(any(x["s"] == ix["H2_scaffold_43"] and abs(mb(x) - 5.2) < 0.1 for x in sites))
+
     def test_cuts_without_telomeres(self):
         """Contact-based sites (the telomere track is unusable here): every site is at a place
         the curator cut, at the default level and at the conservative end."""

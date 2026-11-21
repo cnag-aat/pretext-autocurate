@@ -1,4 +1,4 @@
-# Handoff: state of pretext-autocurate (v1.2.0, updated 2026-11-16)
+# Handoff: state of pretext-autocurate (v1.3.0, updated 2026-11-21)
 
 Read this first, then `PLAN.md` section 0 (the curator's priorities and conventions; the
 rest of PLAN.md is the original plan and partly out of date), then the tail of
@@ -16,6 +16,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `misjoin.py` | `detect_misjoins` (cuts), `weak_junctions` (candidate breakpoints) |
 | `overlap.py` | contig-end overlaps and copies: `classify_candidates` (candidate haplotigs aligned to their copy-line partner: gap_fill / copy / none, with switch points), `gap_overlaps` (gaps with a copy on both sides), `resolve_overlaps`, `detect_end_overlaps` (one scaffold's end is the other haplotype of another's end: a copy line pairing depth k with depth D-1-k), `align_overlap` (minimap2 asm20 --cs on the two ends: collinear copy chain in depth coordinates, where the copy stops, an identical stretch to switch at) |
 | `breaks.py` | breakpoints placed to the base (`OUT.breaks.tsv`): `refine_cuts` moves pixel cuts in the PretextView AGP before pretext-to-asm; `apply_switches` makes gapless joins in its output (overlaps between scaffolds, haplotypic gaps), the other path through each bubble kept as a haplotig |
+| `linescan.py` | displaced stretches (curator, 2026-11-21): little contact with their own sides and a specific line off the diagonal to one place elsewhere. `row_peaks` (one pass over every texture in 4 px bins; per bin-row the peak per 256 px column block, promiscuous bins masked; `groups` keeps a row inside its haplotype), `cached_peaks` (once per sweep), `scan` (runs of rows with one peak place, tested as wholes: home / line / spec; places chosen again with every displaced stretch out of the way), `align_stretch` (minimap2 asm20 on the place: strand, a copy at an end, a switch point) |
 | `inversion.py` | `detect_inversions`: a segment assembled backwards inside a piece, from the bow-tie (reversed-end corners at adjacent contact AND assembled-end corners down to what the segment's length gives; half a bow-tie at a scaffold end) |
 | `haplotig.py` | `detect_haplotigs` (whole small scaffolds, tiers high/medium/low), `detect_contig_haplotigs` (gap-to-gap contigs) |
 | `place.py` | `place_scaffolds`: anchor (chromosome) for each small piece; localise only at reduced-contact junctions |
@@ -24,7 +25,7 @@ rest of PLAN.md is the original plan and partly out of date), then the tail of
 | `allhaps/` | the allhaps pass, a package (split 2026-11-17, `docs/ALLHAPS_SPLIT.md`): |
 | `allhaps/common.py` | `Level` (the one conservative-to-aggressive setting), `THRESHOLDS` + `Thresholds` (every act-or-flag threshold by name, at levels 0 / 0.5 / 1), `Pair`, `write_rows` |
 | `allhaps/pairing.py` | homolog pairing (`pair_homologs`, Hi-C or sequence), `same_prefix_pairs`, `merge_pairs` (pairs that are parts of one chromosome) |
-| `allhaps/sites.py` | `telomere_sites` (cut / invert_tip / keep at gaps), `alignment_breaks` |
+| `allhaps/sites.py` | `telomere_sites` (cut / invert_tip / keep at gaps), `alignment_breaks` (read across short islands aligning elsewhere), `_contig_misjoins` (a chromosome-joining cut moved from the gap into the contig where the homolog changes; the stretch between turned onto the far side) |
 | `allhaps/evidence.py` | hifiasm graph evidence at sites (`_graph_evidence`, `_unitig_evidence`) |
 | `allhaps/chromjoin.py` | chromosome-level joins: pairs merged on specific, spread-out whole-block contact with repeat bins masked (arms apart across centromeric repeats); guards against cuts the pass made and small clustering chromosomes |
 | `allhaps/graphjoin.py` | joins only hifiasm's graph sees, between scaffold ends: `links` (evidence for `merge_pairs`), `place` (the smaller scaffold put at the larger one's end) |
@@ -50,7 +51,9 @@ Order inside `curate_single`: misjoin cuts -> contig haplotigs (cut at gaps) -> 
 junctions cut tentatively and kept only if pieces fit better elsewhere -> inversions (cut at
 both ends when clear, else proposed) -> contig-end overlaps (with `--fasta`: the copy cut off
 at the base the alignment gives, else proposed) -> gaps with haplotypic copies on both sides
-(sequence only: switch rows for asm) -> `SegmentedMap` -> joins/chains (an applied inversion
+(sequence only: switch rows for asm) -> candidate haplotigs aligned (gap fills) -> displaced
+stretches (`_displaced`: cut at both ends, aligned to their place, copies at an end cut off)
+-> `SegmentedMap` -> joins/chains (an applied inversion
 then takes its ends back, reversed; an applied overlap joins the other scaffold's end to the
 cut, the copy becomes its Haplotig) -> haplotig calls -> placement -> layout per chain (pieces, insertions,
 then unlocs, then haplotigs at the chromosome end) -> `plan_edits` -> paint/tags/waypoints.

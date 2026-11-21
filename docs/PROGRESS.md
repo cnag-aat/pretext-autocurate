@@ -2476,3 +2476,46 @@ Curator's review of the level 1 savestates (2026-11-20).
   xgTylRafi, bAegFun, qqTroRaco, 1-2 s each); --telomere-from-map to decide on the map's track.
 - The guard against a collapsed tandem repeat looking like a haplotypic copy needs read phasing
   (how many haplotypes the reads show there): not an input yet.
+- qqTroRaco review, level 1 (curator): H2_scaffold_1 50.4-50.9 Mb has no contact with its side and
+  belongs with the rest of H2_scaffold_1, paired with H1_scaffold_30: "breaking on the wrong gap".
+  The homolog changes inside contig h2tg000110l at 50.45 Mb (H1_scaffold_7 0.12-7.55 Mb + |
+  H1_scaffold_30 31.31-31.74 Mb +), 0.43 Mb before the gap at 50.88 Mb that was cut.
+  `sites._contig_misjoins`: a cut between two chromosomes at a gap, with the change of homolog
+  within 1.5 Mb of it inside a contig, moves there (exact base from the two alignments, a cut row in
+  breaks.tsv); the gap becomes a site between the stretch and the far side, invert_tip when the
+  stretch aligns to the far side's homolog the other way round and, turned, continues it.
+- H2_scaffold_43 should follow H1_scaffold_28 at level 0.5 as at level 1 (its 0-5.26 Mb after the
+  rest). At 0.5 the gap at 5.18 Mb was no site: contact 0.60 (gap_max 0.6), and the alignment
+  break was lost behind a 190 kb island aligning to H1_scaffold_57 at the gap. `alignment_breaks`
+  now reads across an island under 500 kb between two alignments to one scaffold, and a break's
+  site is any gap between its two alignments (or within 2 px), not only within 2 px of the midpoint.
+  qqTroRaco level 0.5: junctions 30/43 / 35/53 -> 32/45 / 36/53, breaks 86% / 66% -> 88% / 76%.
+- Displaced stretches (curator, xgTylRafi scaffold_9 14.8-15.65 Mb: "no contact signal near the
+  diagonal, instead a horizontal or vertical line way off diagonal clearly indicating its proper
+  position somewhere else; scan for this pattern universally"). `linescan.py`: one pass over
+  every texture in 4 px bins (3 x 3-bin average; single pixels are too noisy, nearly every row
+  has a 0.9 pixel somewhere) keeps each bin-row's peak per 256 px column block, away from its
+  own neighbourhood, with bins that contact everything masked. Rows whose peak keeps to one place
+  form runs; each run is tested whole: contact with its own sides (home), with both sides of the
+  best junction its line points at (line), and the rows' peaks there against elsewhere (spec).
+  Places are chosen again with every displaced stretch out of the way (scaffold_9's stretch goes
+  where scaffold_10 56.48-56.74 sits, and that one belongs in scaffold_11). On xgTylRafi at
+  line 0.25, ratio 3, spec 1.5: exactly the four stretches the curator moved, place and strand
+  right (spec 2.9, 2.7, 1.7, 1.65; the curated haplotig scaffold_2 109.69-111.11 Mb 1.05).
+  Single mode cuts both ends, aligns the stretch to the place (`align_stretch`: strand, copy at
+  an end -> it goes next to that copy, cut off as a Haplotig from 5 px, switch row), and moves
+  it (`move` row); its sides are joined back. scaffold_9 15.30-15.65 is scaffold_10 56.72-57.03
+  (the curator's Haplotig 15.30-15.61). xgTylRafi: junctions 31/35 / 47/68 -> 34/37 / 49/68,
+  breaks 95% / 53% -> 93% / 57%. Allhaps: rows look only within their haplotype (every stretch
+  has a line to its homolog); the stretch is cut out and placed by pairing and placement
+  (`displaced` review row). Nothing found on qqTroRaco or bAegFun (bAegFun's candidates are
+  microchromosome ends with unspecific lines, 1.1). The pass takes ~100 s on 65,536 px, once
+  per sweep (`cached_peaks`).
+- qqTroRaco review, level 1 (curator): H2_scaffold_1 50.4-50.9 Mb has no contact with its side and
+  belongs with the rest of H2_scaffold_1, paired with H1_scaffold_30: "breaking on the wrong gap".
+  The homolog changes inside contig h2tg000110l at 50.45 Mb (H1_scaffold_7 0.12-7.55 Mb + |
+  H1_scaffold_30 31.31-31.74 Mb +), 0.43 Mb before the gap at 50.88 Mb that was cut.
+  `sites._contig_misjoins`: a cut between two chromosomes at a gap, with the change of homolog
+  within 1.5 Mb of it inside a contig, moves there (exact base from the two alignments, a cut row in
+  breaks.tsv); the gap becomes a site between the stretch and the far side, invert_tip when the
+  stretch aligns to the far sides

@@ -52,6 +52,9 @@ THRESHOLDS = {
     "conflict_min": (0.3, 0.5, 0.8, "end-contact gain that keeps an arrangement against the alignment"),
     "contig_min": (1e6, 5e5, 2e5, "bp of contradicting contigs to make the other copy the reference"),
     "min_loose": (8, 4, 2, "smallest loose scaffold (px) put into a chain where it aligns"),
+    "move_line": (0.35, 0.25, 0.2, "displaced stretch: line contact (over adjacent sequence) at least"),
+    "move_ratio": (4.0, 3.0, 2.0, "displaced stretch: line contact over contact with its own sides"),
+    "move_spec": (2.0, 1.5, 1.3, "displaced stretch: line over the next best place in its haplotype"),
 }
 
 

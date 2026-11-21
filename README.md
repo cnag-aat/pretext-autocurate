@@ -201,7 +201,21 @@ Single haplotype: misjoin cuts (preferably at gaps), joins and orientation of la
 rearrangements inside a scaffold (tentative cuts kept only if the pieces fit better
 elsewhere), inversions (the bow-tie, see the level table), placement of small scaffolds
 (inserted at a gap when clear, `Unloc` otherwise), haplotigs (off-diagonal line plus reduced
-coverage; borderline ones highlighted), and, with `--fasta`:
+coverage; borderline ones highlighted), **displaced stretches**, and, with `--fasta`, the
+items after them.
+
+- **Displaced stretches** (`move`): a stretch inside a scaffold with almost no contact with
+  its own two sides and a line off the diagonal that points at one place elsewhere. One pass
+  over the map (about 100 s on a 65,536 px map, once per `--sweep`) finds them anywhere. Each
+  is cut out at both ends and goes in at the junction (gap, cut or weak point) its line points
+  at, its sides joined back together. With `--fasta` the stretch is aligned there: the
+  alignment gives the strand, a copy at one end says it goes right next to that copy (cut off
+  as a `Haplotig` when 5 px or more, joined without a gap by `asm`), and a stretch that is
+  mostly a copy is a haplotig of that place. Without the sequence and with no clear
+  orientation it is attached as an `Unloc`, with a waypoint at the place. The bar
+  (`move_line`, `move_ratio`, `move_spec`) moves with `--level`. In allhaps mode the scan
+  looks within each haplotype, cuts the stretch out (`displaced` in the review list), and the
+  pairing and placement steps put it where it belongs.
 
 - **Overlapping scaffold ends** (`overlap` / `flag_overlap`): one scaffold's end is the other
   haplotype of another scaffold's end, and the copy runs to that scaffold's end (hifiasm left

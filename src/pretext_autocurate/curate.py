@@ -159,6 +159,12 @@ SINGLE_THRESHOLDS = {
     "inv_gain": (1.2, 1.0, 0.8, "inversion with both junctions: reversed corners (1 = adjacent) needed to apply"),
     "inv_drop": (0.2, 0.3, 0.4, "inversion with both junctions: assembled corners at most this to apply"),
     "inv_end_gain": (9.9, 9.9, 1.0, "inversion at a scaffold end (half a bow-tie): reversed corner needed to apply"),
+    # Displaced stretches (linescan.py). xgTylRafi at 1.5: the four the curator moved, nothing else
+    # (line over the next best place 2.9, 2.7, 1.7, 1.65; the curated haplotig scaffold_2
+    # 109.69-111.11 Mb 1.05).
+    "move_line": (0.35, 0.25, 0.2, "displaced stretch: line contact (over adjacent sequence) at least"),
+    "move_ratio": (4.0, 3.0, 2.0, "displaced stretch: line contact over contact with its own sides"),
+    "move_spec": (2.0, 1.5, 1.3, "displaced stretch: line over the next best place"),
 }
 
 
@@ -169,6 +175,160 @@ def single_thresholds(level=0.5):
     out = {k: lv.at(c, d, a) for k, (c, d, a, _) in SINGLE_THRESHOLDS.items()}
     out["insert_min_px"] = int(round(out["insert_min_px"]))
     return out
+
+
+def _displaced(raw, sg, cuts, th, fasta, minimap2, exact, fills, inversions):
+    """Displaced stretches of `raw` (linescan.scan), each cut out (applied cuts appended to
+    `cuts`, or flagged ones there switched on) and decided with the sequence when there is
+    some. Copies at an end are cut off (5 px or more) and switch rows appended to `exact`.
+
+    Returns records (dicts): d (linescan.Displaced), name (scaffold), kind ('move': into the
+    place, 'haplotig': a copy of the place, tagged next to it, 'unloc': strand unclear,
+    attached), t (after this pixel), strand, target (scaffold name), copies [(first px, last
+    px)] cut off as Haplotigs, mid (a pixel of the moved part), al (StretchAlignment or None),
+    why (evidence)."""
+    from . import linescan
+    lp = linescan.Params(line_min=th["move_line"], move_ratio=th["move_ratio"], spec=th["move_spec"])
+    applied = sorted(c.after_px for c in cuts if c.apply)
+    found = linescan.scan(raw, sg, lp, peaks=linescan.cached_peaks(raw, lp), junctions=applied)
+    bpp, so, gap = raw.bp_per_pix, raw.orig_scaffold, raw.graphs.get("gap")
+    start, npx = raw.scaffold_start, raw.scaffold_npix
+    busy = {f["s"] for f in fills}
+    inv_spans = [(lq if lq is not None else v.start_px, rq if rq is not None else v.end_px)
+                 for v, apply, lq, rq in inversions if apply]
+    gone = [(d.a, d.b) for d in found]
+    bp_of = lambda q: int(round((raw.rel_coord[q] + 1) * bpp))          # bp after pixel q (1-based end)
+
+    def out_of_gone(t):
+        """A place inside another stretch that leaves: just before that stretch instead."""
+        for _ in range(len(gone)):
+            hit = [(ga, gb) for ga, gb in gone if ga <= t <= gb]
+            if not hit:
+                break
+            t = hit[0][0] - 1
+        return t
+
+    def junctions(ts):
+        """Pixels of scaffold ts after which a piece can go: gaps, applied cuts, its last pixel."""
+        a0, a1 = int(start[ts]), int(start[ts] + npx[ts] - 1)
+        out = {a1} | {q for q in applied if a0 <= q <= a1} | {c.after_px for c in cuts if c.apply and a0 <= c.after_px <= a1}
+        if gap is not None:
+            out |= {int(q) for q in a0 + np.nonzero(gap[a0:a1 + 1] > 0)[0]}
+        return sorted(out)
+
+    def cut_at(q, why):
+        """Switch on a cut after q (an existing one within 2 px is used): returns its pixel."""
+        near = [c for c in cuts if c.scaffold == raw.names[int(so[q])] and abs(c.after_px - q) <= 2]
+        if near:
+            c = min(near, key=lambda c: abs(c.after_px - q))
+            if not c.apply:
+                c.apply, c.reason = True, c.reason.split(": not cut")[0] + "; " + why
+            return c.after_px
+        cuts.append(Cut(raw.names[int(so[q])], q, bp_of(q), bool(gap is not None and gap[q] > 0), float("nan"),
+                        float("nan"), True, why))
+        return q
+
+    recs = []
+    for d in found:
+        name, s = raw.names[d.s], d.s
+        if s in busy or any(not (d.b < x0 or d.a > x1) for x0, x1 in inv_spans):
+            continue                    # already moved or turned for another reason
+        if any(d.a + 1 < c.after_px < d.b - 2 for c in cuts if c.apply and so[c.after_px] == s):
+            continue                    # cut inside for another reason: not one stretch
+        ts = int(so[d.t])
+        target = raw.names[ts]
+        L = d.b - d.a + 1
+        a_bp, b_bp = int(round(raw.rel_coord[d.a] * bpp)), bp_of(d.b)
+        where = lambda t: f"{raw.names[int(so[t])]} {bp_of(t) / 1e6:.2f} Mb"
+        why = (f"{a_bp / 1e6:.2f}-{b_bp / 1e6:.2f} Mb: contact with its own sides {d.left:.2f} / {d.right:.2f} of "
+               f"adjacent sequence, a line to {target} at {line_txt(d, raw)} ({d.line:.2f}; next best place "
+               f"{d.extra['row_out'] / max(d.extra['row_in'], 1e-9) * d.line:.2f})")
+        al = None
+        if fasta:
+            w0, w1 = d.extra["window"]
+            t0 = int(round(raw.rel_coord[max(int(start[ts]), w0)] * bpp)) - L * bpp
+            t1 = bp_of(min(int(start[ts] + npx[ts] - 1), w1)) + L * bpp
+            al = linescan.align_stretch(fasta, name, a_bp, b_bp, target, t0, t1, minimap2, end_tol=max(20_000, 3 * bpp))
+        # the ends first: a cut already there (within 2 px) is used, and the copies are bounded by it
+        qa = cut_at(d.a - 1, "start of a displaced stretch (see the move row)")
+        qb = cut_at(d.b, "end of a displaced stretch (see the move row)")
+        rec = dict(d=d, name=name, kind="move", t=d.t, strand=d.strand, target=target, copies=[], al=al,
+                   mid=(qa + 1 + qb) // 2, qa=qa, qb=qb)
+        if al is not None and al.strand and al.aligned >= 0.7 and al.divergence <= 0.05:
+            rec["kind"] = "haplotig"
+            why += (f"; {al.aligned:.0%} of it aligns to {target} there ({al.divergence:.1%} divergence): a haplotypic "
+                    f"copy of that place, tagged Haplotig next to it")
+        else:
+            if al is not None and al.strand and al.weight >= 10_000:
+                rec["strand"] = al.strand
+                why += f"; strand {al.strand} from the sequence ({al.weight / 1e3:.0f} kb aligned to {target} there)"
+            elif d.orient >= th["insert_orient"]:
+                why += f"; strand {d.strand} from contact (orientation ratio {d.orient:.2f})"
+            else:
+                rec["kind"] = "unloc"
+                why += (f"; strand unclear (orientation ratio {d.orient:.2f}, nothing aligns): attached to {target} as "
+                        f"an Unloc, waypoint at the place")
+            # a copy at an end decides the place: the stretch goes right before (or after) it
+            for end, cp, sw in (("head", al.head if al else None, al.head_switch if al else None),
+                                ("tail", al.tail if al else None, al.tail_switch if al else None)):
+                if cp is None or rec["kind"] != "move":
+                    continue
+                q0, q1, c0, c1 = cp
+                right = (end == "tail") == (rec["strand"] == "+")       # the copy meets what follows the place
+                js = junctions(ts)
+                if right:
+                    tp = int(start[ts]) + int(c0 / bpp)
+                    cand = [q for q in js if tp - L - 2 * lp.W <= q <= tp + 1]
+                    t = max(cand) if cand else None
+                else:
+                    tp = int(start[ts]) + int(c1 / bpp)
+                    cand = [q for q in js if tp - 1 <= q <= tp + L + 2 * lp.W]
+                    t = min(cand) if cand else None
+                if t is not None:
+                    rec["t"] = t
+                why += (f"; its {end} ({(q1 - q0) / 1e3:.0f} kb) is a copy of {target} {c0 / 1e6:.2f}-{c1 / 1e6:.2f} Mb")
+                if (q1 - q0) / bpp >= 5:
+                    # cut off at the base the copy stops; the rest goes in, the copy is a Haplotig
+                    inner = q1 if end == "head" else q0
+                    qc = int(start[s]) + int(round(inner / bpp)) - 1
+                    if qa + 1 <= qc < qb:
+                        cut_at(qc, f"end of the copy of {target} at the {end} of a displaced stretch (see the move row)")
+                        exact.append(dict(kind="cut", scaffold=name, px_bp=bp_of(qc), bp=inner, partner="", partner_bp=0,
+                                          method="alignment", src="fill",
+                                          evidence=f"copy of {target} {c0 / 1e6:.2f}-{c1 / 1e6:.2f} Mb ends here"))
+                        rec["copies"].append((qa + 1, qc) if end == "head" else (qc + 1, qb))
+                        rec["mid"] = ((qc + 1 + qb) // 2) if end == "head" else ((qa + 1 + qc) // 2)
+                        why += ", cut off as a Haplotig"
+                        cut_len = True
+                    else:
+                        cut_len = False
+                else:
+                    cut_len = False
+                if sw is not None:
+                    q_sw, t_sw = sw
+                    if right:                   # the stretch, then the place's sequence after it
+                        if rec["strand"] == "+":
+                            face = q0 if cut_len else b_bp
+                        else:
+                            face = q1 + 1 if cut_len else a_bp + 1
+                        row = dict(kind="switch", scaffold=name, px_bp=face, bp=q_sw + 1, partner=target,
+                                   partner_bp=t_sw + 1)
+                    else:                       # the place's sequence before it, then the stretch
+                        row = dict(kind="switch", scaffold=target, px_bp=bp_of(rec["t"]), bp=t_sw + 1, partner=name,
+                                   partner_bp=q_sw + 1)
+                    exact.append(dict(row, method="alignment", src="fill",
+                                      evidence=f"displaced stretch of {name} into {target}: identical around the switch"))
+                    why += "; joined without a gap where the two are identical"
+        rec["t"] = out_of_gone(rec["t"])
+        rec["why"] = why + f"; goes in after {where(rec['t'])}, strand {rec['strand']}"
+        recs.append(rec)
+    return recs
+
+
+def line_txt(d, raw):
+    """Where a displaced stretch's line points, in Mb of the target scaffold."""
+    s = int(raw.orig_scaffold[d.t])
+    return f"{(d.t - raw.scaffold_start[s] + 1) * raw.bp_per_pix / 1e6:.2f} Mb"
 
 
 def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_low=0.8,
@@ -392,6 +552,13 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                       partner="", partner_bp=0, method="alignment", src="fill",
                                       evidence=f"copy of {cc.partner} by its gap at {cc.gap[0] + 1:,} ends here"))
             fills.append(rec)
+    # Displaced stretches (linescan.py; curator, 2026-11-21): little contact with their own sides
+    # and a line to one place elsewhere. Cut out at both ends and moved there; the sequence, when
+    # there is some, gives the strand and any copy at an end (cut off as a Haplotig when 5 px or
+    # more, and joined without a gap where the two are identical).
+    displaced = []
+    if do_cuts and do_joins:
+        displaced = _displaced(raw, sg_raw, cuts, th, fasta, minimap2, exact, fills, inversions)
     cuts.sort(key=lambda c: c.after_px)
     # from here on every applied cut is a scaffold end: pieces are "scaffolds" of pt
     pt = SegmentedMap(raw, [c.after_px for c in cuts if c.apply])
@@ -452,6 +619,18 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
         f["A"] = int(pt.orig_scaffold[f["q_left"]])
         f["copies"] = sorted({int(pt.orig_scaffold[p]) for p in range(a, a + n)} - {f["M"]})
         inv_units |= {f["M"], *f["copies"]}
+    # Displaced stretches: the piece and the copies cut off it stay out of placement by contact
+    for r in displaced:
+        r["M"] = int(pt.orig_scaffold[r["mid"]])
+        r["C"] = sorted({int(pt.orig_scaffold[x]) for x0, x1 in r["copies"] for x in range(x0, x1 + 1)} - {r["M"]})
+        r["A"] = int(pt.orig_scaffold[r["t"]])
+        inv_units |= {r["M"], *r["C"]}
+        own = {(u, e) for u in (r["M"], *r["C"]) for e in "ht"}
+        for u, e in own:
+            _unlink(chains, u, e)
+        for j in joins:
+            if j.accepted and ((j.a, j.a_end) in own or (j.b, j.b_end) in own):
+                j.accepted, j.reason = False, j.reason + "; an end of a displaced stretch, moved to its place instead"
     sg = Signal(pt)                     # new Signal: decay and insulation respect the cuts
     haps = {c.scaffold: c for c in detect_haplotigs(pt, hap_params or HapParams(), sg)}
     places = {p.scaffold: p for p in place_scaffolds(pt, place_params or PlaceParams(), sg, junction_contact=jc)
@@ -570,6 +749,26 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
             decisions.append(Decision(pt.names[c], int(pt.scaffold_npix[c]), 0, "attach_haplotig", pt.names[A], 0, "",
                                       "high", f"copy of the side of {cc.partner}'s gap at {cc.gap[0] + 1:,} bp, cut off "
                                               f"the piece that fills it (see the fill_gap row)"))
+    for r in displaced:                          # displaced stretches: moved, or tagged next to their place
+        d, M, A = r["d"], r["M"], r["A"]
+        if r["kind"] == "move":
+            moved[M] = ("", A, r["t"], r["strand"])
+            act, conf = "move", "high"
+        elif r["kind"] == "haplotig":
+            moved[M] = ("Haplotig", A, -1, "+")
+            act, conf = "attach_haplotig", "high"
+        else:
+            moved[M] = ("Unloc", A, -1, "+")
+            proposals.append(r["t"])
+            act, conf = "attach_unloc", "medium"
+        decisions.append(Decision(r["name"], d.b - d.a + 1, int(round((d.b - d.a + 1) * pt.bp_per_pix)), act, r["target"],
+                                  int(round((raw.rel_coord[r["t"]] + 1) * pt.bp_per_pix)),
+                                  r["strand"] if act == "move" else "", conf, "displaced stretch: " + r["why"]))
+        for c in r["C"]:
+            moved[c] = ("Haplotig", A, -1, "+")
+            decisions.append(Decision(r["name"], int(pt.scaffold_npix[c]), int(round(pt.scaffold_npix[c] * pt.bp_per_pix)),
+                                      "attach_haplotig", r["target"], 0, "", "high",
+                                      f"copy of {r['target']} cut off the displaced stretch moved there (see the move row)"))
     for Cp, (K, rec) in ov_haps.items():         # the copies cut off by applied overlaps
         if not rec.get("linked", False):
             continue
@@ -734,6 +933,17 @@ def curate_single(pt, hap_params=None, place_params=None, unloc_min_px=3, cov_lo
                                       "", "medium",
                                       f"{endname(L, 't')} with {endname(R, 'h')}: flanks of the haplotig contig "
                                       f"cut out between them, kept together as assembled (no clearer join for either end)"))
+    # The same for the sides of a displaced stretch moved away (unless a join took their ends)
+    for r in displaced if do_joins else []:
+        L, R = int(pt.orig_scaffold[r["qa"]]), int(pt.orig_scaffold[min(r["qb"] + 1, pt.npix - 1)])
+        if L in moved or R in moved or L == R or raw.orig_scaffold[r["qa"]] != raw.orig_scaffold[r["qb"] + 1]:
+            continue
+        if _link(chains, L, R):
+            decisions.append(Decision(pt.parent_of(pt.names[L])[0], int(npx[L]), 0, "join",
+                                      pt.parent_of(pt.names[R])[0], int(round(pt.parent_of(pt.names[R])[1] * pt.bp_per_pix)),
+                                      "", "medium",
+                                      f"{endname(L, t)} with {endname(R, h)}: sides of the displaced stretch moved "
+                                      f"away from between them, kept together as assembled (no clearer join for either end)"))
     in_chain = {s for ch in chains for s, _ in ch}
     # output scaffolds: joined chains plus every other piece alone, in original map order
     groups = [ch for ch in chains] + [[(int(s), False)] for s in np.argsort(start)
