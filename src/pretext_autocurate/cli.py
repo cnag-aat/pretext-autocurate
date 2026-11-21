@@ -387,6 +387,19 @@ def cmd_run(a):
     except ValueError as e:
         sys.exit(f"error: {e}")
     pt = maps[0]
+    if "gap" not in pt.graphs and a.fasta:
+        # The N runs of the assembly, placed on the map's pixels the way PretextGraph does.
+        from . import tracks
+        try:
+            g = tracks.gap_track(pt, tracks.gaps_bed(a.fasta, a.work_dir or os.path.join(a.out_dir, "work")))
+        except OSError as e:
+            sys.exit(f"error: {e}")
+        if g is None:
+            print(f"warning: {a.fasta} does not match {a.map[0]} (sequence names, order or lengths); "
+                  "no gap track made from it", file=sys.stderr)
+        else:
+            pt.graphs["gap"] = g
+            print(f"track gap: from the runs of N in {a.fasta} ({int(g.sum())} pixels)", file=sys.stderr)
     for g in ("gap", "coverage"):
         if g not in pt.graphs:
             print(f"warning: {a.map[0]} has no '{g}' track; calls that need it are weaker or skipped "

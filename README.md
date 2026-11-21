@@ -69,7 +69,8 @@ Single haplotype (or a collapsed assembly):
 
 The mode is detected from the scaffold names (`--mode single|allhaps` to force it). The
 first `--map` is analysed and should be the MQ0 map; it should carry the `gap` and
-`coverage` tracks (and ideally `telomere`). Every further map of the same assembly gets a
+`coverage` tracks (and ideally `telomere`); a map without a `gap` track gets one from the
+runs of N in `--fasta` (cached in the work directory as `gaps.bed`). Every further map of the same assembly gets a
 savestate with the same edits; in two-haplotype mode the second map is read as the high-MQ
 map.
 

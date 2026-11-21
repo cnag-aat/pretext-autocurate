@@ -200,6 +200,63 @@ def run_telo_scan(fasta, workdir, motif, script=None, threads=8):
     return {"telomere_5p": bg5, "telomere_3p": bg3}
 
 
+def gaps_bed(fasta, workdir):
+    """BED of the runs of N in the assembly (cached in `workdir`), with each sequence's length
+    on a '#len' comment line (to_pixels skips comments)."""
+    os.makedirs(workdir, exist_ok=True)
+    bed = os.path.join(workdir, "gaps.bed")
+    if os.path.exists(bed) and os.path.getmtime(bed) >= os.path.getmtime(fasta):
+        return bed
+    run = re.compile(rb"[Nn]+")
+    tmp = bed + ".tmp"                          # renamed when complete: an interrupted run is not cached
+    op = gzip.open if str(fasta).endswith(".gz") else open
+    with op(fasta, "rb") as f, open(tmp, "w") as out:
+        def flush(name, parts):
+            if name is not None:
+                seq = b"".join(parts)
+                out.write(f"#len\t{name}\t{len(seq)}\n")
+                for m in run.finditer(seq):
+                    out.write(f"{name}\t{m.start()}\t{m.end()}\n")
+        name, parts = None, []
+        for line in f:
+            if line.startswith(b">"):
+                flush(name, parts)
+                name, parts = line[1:].split()[0].decode(), []
+            else:
+                parts.append(line.rstrip())
+        flush(name, parts)
+    os.replace(tmp, bed)
+    return bed
+
+
+def gap_track(pt, bed):
+    """The gap track (1 on every pixel holding an N, else 0) from `gaps_bed`, or None when the
+    sequences are not the map's (names, order or total length differ).
+
+    Pixels are placed by position in the whole assembly (offset of the sequence + position,
+    over bp per pixel), as PretextGraph does: on the five test maps this reproduces the maps' own
+    gap tracks at 99.5-100% of gap pixels, the rest one pixel off. (Placing by position within
+    the scaffold, as to_pixels does, puts about half of them one pixel early.)"""
+    lens, runs = {}, []
+    with open(bed) as f:
+        for line in f:
+            c = line.split()
+            if c[0] == "#len":
+                lens[c[1]] = int(c[2])
+            else:
+                runs.append((c[0], int(c[1]), int(c[2])))
+    if list(lens) != list(pt.names) or sum(lens.values()) != pt.total_len:
+        return None
+    off, o = {}, 0
+    for n, ln in lens.items():
+        off[n], o = o, o + ln
+    out = np.zeros(pt.npix, dtype=np.int32)
+    for n, s, e in runs:
+        a, b = int((off[n] + s) / pt.bp_per_pix), int((off[n] + e - 1) / pt.bp_per_pix)
+        out[min(a, pt.npix - 1):min(b, pt.npix - 1) + 1] = 1
+    return out
+
+
 def run_red(fasta, workdir, hap_regex=r"^(H\d+)_", red=None):
     """Red on each haplotype separately (homologous copies would otherwise count as repeats).
     Returns one BED of repeat intervals for the whole assembly (cached)."""

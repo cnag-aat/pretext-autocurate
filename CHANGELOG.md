@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A map without a `gap` track gets one from the runs of N in `--fasta`, placed on the pixels
+  as PretextGraph does (`tracks.gaps_bed`, `tracks.gap_track`; cached as `work/gaps.bed`). On
+  the test maps it matches their own gap tracks at 99.5-100% of gap pixels; maps that have a
+  gap track are not affected.
+
 ## 1.3.0 (2026-11-21)
 
 Sequence-placed edits, displaced stretches, and an experimental adjacency solver.

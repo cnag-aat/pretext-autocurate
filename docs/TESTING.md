@@ -27,7 +27,7 @@ What the tool needs:
 
 | Input | Needed? |
 |---|---|
-| MQ0 `.pretext` map (first `--map`) with `gap` and `coverage` tracks | yes (older names GAPs / ONTcov are read too) |
+| MQ0 `.pretext` map (first `--map`) with `gap` and `coverage` tracks | yes (older names GAPs / ONTcov are read too; with `--fasta` a missing gap track is made from the runs of N) |
 | high-MQ map of the same assembly (second `--map`), two haplotypes | recommended |
 | the assembly FASTA (`--fasta`) | strongly recommended: alignments between haplotypes, telomeres, sequence-placed cuts and joins |
 | hifiasm GFAs (`--gfa`, `--utg-gfa`) and YaHS AGPs (`--yahs-agp`) | if you have them |

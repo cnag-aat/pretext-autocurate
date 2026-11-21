@@ -114,5 +114,24 @@ class TestTracks(unittest.TestCase):
                     pt.graphs[k] = v
 
 
+LAR = os.path.join(ROOT, "seed", "fixtures", "icLarUrsu.pri.yahs.mq0.pretext")
+
+
+@unittest.skipUnless(os.path.exists(LAR), "missing fixture")
+class TestGapTrack(unittest.TestCase):
+    def test_gap_track_from_fasta(self):
+        """The N runs of the FASTA land on the same pixels as the map's own gap track (37), and a
+        FASTA that is not the map's gives no track."""
+        pt = Pretext(LAR)
+        with tempfile.TemporaryDirectory() as d:
+            bed = tracks.gaps_bed(LAR.replace(".mq0.pretext", ".fa"), d)
+            g = tracks.gap_track(pt, bed)
+            self.assertTrue(np.array_equal(g > 0, pt.graphs["gap"] > 0))
+            other = os.path.join(d, "other.bed")
+            with open(bed) as f, open(other, "w") as o:
+                o.write(f.read().replace("#len\tscaffold_1\t", "#len\tscaffold_1\t1"))
+            self.assertIsNone(tracks.gap_track(pt, other))
+
+
 if __name__ == "__main__":
     unittest.main()
